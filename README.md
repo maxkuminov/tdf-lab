@@ -39,9 +39,9 @@ decrypt itself away from any web application.
 | Platform stack | `docker-compose.yml`, `opentdf.yaml`, `keycloak_data.example.yaml`, `postgres-init/` | OpenTDF platform v0.25.1 in `mode: all` (policy, authorization, KAS, entity resolution), Keycloak, PostgreSQL, on an internal Docker network with no gateway. One attribute (`classification`, values `secret` and `public`) and two demo users who differ only in that attribute. |
 | Web console | `webapp/`, `nginx.conf` | A React SPA that signs in with authorization code + PKCE, encrypts a file to an attribute in the browser, and shows the rewrap being allowed or denied. It draws a live protocol sequence diagram, dissects the manifest field by field, and distinguishes four refusals: policy denial, policy-binding mismatch (tamper), payload integrity failure, and token rejection. |
 | Share API and Library | `shareapi/` (Express 5 + jose), Library panel in the console | The untrusted half of the lab. It stores sealed `.tdf` files and metadata, validates that uploads are well-formed TDFs, and never sees plaintext, a data key, or a password. Anyone signed in can fetch any file. Only the KAS decides who can read one. |
-| Self-decrypting HTML wrapper | `webapp/src/wrapper/` | Any sealed file can be exported as one self-contained `.html` page carrying the ciphertext, the manifest, and a reader with the OpenTDF SDK inlined. Opened from disk, it signs in with the OAuth 2.0 Device Authorization Grant (RFC 8628, no redirect URI needed) and asks the KAS to rewrap. The page states its two costs to the reader (see "Design trade-offs"). |
+| Self-decrypting HTML wrapper | `webapp/src/wrapper/` | Any sealed file can be exported as one self-contained `.html` page carrying the ciphertext, the manifest, and a reader with the OpenTDF SDK inlined. The intended flow from disk signs in with the OAuth 2.0 Device Authorization Grant (RFC 8628, no redirect URI needed) and asks the KAS to rewrap. The pieces were tested separately; the full approval-to-plaintext chain remains unverified. The page states its two costs to the reader (see "Design trade-offs"). |
 | Field-level encrypted SQLite | `dbdemo/dbdemo.py`, Database panel in the console | An `employees` table whose sensitive columns exist only as ZTDF ciphertexts, one TDF per cell, sealed under each row's classification. Plain columns stay queryable. Each protected cell costs one KAS rewrap to read, and an unentitled user gets a policy denial from the KAS, not a client-side check. All data is fictional. |
-| NanoTDF note | `dbdemo/dbdemo.py` docstring | The per-cell demo was designed for NanoTDF, the compact binary TDF. NanoTDF was removed from OpenTDF in the v0.12.0 releases of 2026-01-27 (platform PR #3013, `fix!: remove nanotdf support`), covering the KAS rewrap path, the Go SDK, `otdfctl`, and the spec docs. Stated rationale: consolidation on one wire format, not a vulnerability. So the demo uses standard ZTDF per cell and pays for it in size. The lab's console reported about 1.7 KB per sealed cell for fixture values of 8 to 30 bytes; `dbdemo.py sizes` prints the ratio for your own run. |
+| NanoTDF note | `dbdemo/dbdemo.py` docstring | The per-cell demo was designed for NanoTDF, the compact binary TDF. NanoTDF was removed from OpenTDF in the v0.12.0 releases of 2026-01-27 (platform PR #3013, `fix!: remove nanotdf support`), covering the KAS rewrap path, the Go SDK, `otdfctl`, and the spec docs. The release notes identify this as a breaking change. So the demo uses standard ZTDF per cell and pays for it in size. The lab's console reported about 1.7 KB per sealed cell for fixture values of 8 to 30 bytes; `dbdemo.py sizes` prints the ratio for your own run. |
 
 ### Observations from running it
 
@@ -72,7 +72,7 @@ These are choices a lab can make and a production system should examine.
 - **Allowing `Origin: null` in the platform's CORS list.** A document opened
   from `file://` reports the origin `null`, so a self-decrypting wrapper can
   only call the KAS if `null` is allowed. But `null` is not "this file". It is
-  the origin of every file-loaded document and every sandboxed frame. A
+  the origin of every file-loaded document and sandboxed frames without same-origin privileges. A
   deployment that allows it accepts cross-origin reads of platform responses
   from any opaque-origin page, in exchange for a wrapper that works with no web
   origin at all. A valid bearer token is still required, and no policy decision
@@ -81,15 +81,13 @@ These are choices a lab can make and a production system should examine.
 - **The wrapper's own code handles the reader's token and plaintext.** In the
   console, the code is served by the lab. In a wrapper, it arrives in the same
   file as the ciphertext, from whoever sent it. Opening one is choosing to run
-  the sender's program. That is a large part of why commercial products tend
-  to send a link to a web application rather than a self-decrypting document.
+  the sender's program. Serving the reader from a trusted web origin avoids that particular code-delivery risk.
   The page and the console both say so next to the controls that produce one.
 - **The `wrapper` client has no redirect URIs and only the device grant.** Its
   `webOrigins` is the literal `"null"` so a `file://` page can read the device
   and token responses. It is separate from `web-console` so the console's
   client never had to be loosened.
-- **The `cli` client allows the OAuth password grant.** It is the only headless
-  way to get a *user* token for scripted allow/deny checks. Acceptable for a
+- **The `cli` client allows the OAuth password grant.** It is the mechanism used here to get a *user* token for scripted allow/deny checks. Acceptable for a
   lab with demo accounts; not something to copy.
 - **The CSP for `/sealed/` pins one inline script by SHA-256.** A wrapper loads
   nothing else, so the single hash is the whole script policy. The hash depends

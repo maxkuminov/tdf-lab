@@ -2,7 +2,7 @@
 
 Max Kuminov, CISSP
 
-September 2026
+10 September 2026
 
 ## Abstract
 
@@ -117,7 +117,7 @@ The same file behaved differently depending on where it was opened:
 | `file://`, a USB stick, an email attachment, any other host | Reads its own manifest with zero network requests and shows the attribute FQNs, KAS URL, policy UUID, schema version and size; explains that it cannot decrypt here |
 | The console's own origin | Signs in with PKCE, performs a real rewrap, decrypts in the page; `user-a` sees plaintext, `user-b` on a `secret` file gets `permission_denied` |
 
-Nothing about the file changed between those two rows; only the origin did. A browser loading a document from the filesystem gives it an opaque origin, which serializes as `null`. No OAuth client can register a redirect URI back to a `null`-origin document, and adding `null` to a CORS allowlist admits every filesystem document and every sandboxed frame, not this one file. So the portable page could read everything it needed except the key.
+Nothing about the file changed between those two rows; only the origin did. A browser loading a document from the filesystem gives it an opaque origin, which serializes as `null`. No OAuth client can register a redirect URI back to a `null`-origin document, and adding `null` to a CORS allowlist admits every filesystem document and sandboxed frames without same-origin privileges, not this one file. So the portable page could read everything it needed except the key.
 
 Injection safety was designed to be structural rather than a matter of careful escaping. A `.tdf` someone hands you is attacker-controlled, including its filename, attribute FQNs, dissemination list and MIME type. The page template has exactly two substitution slots, both inside double-quoted attributes, and both are validated against a strict base64 pattern; the generator throws rather than emit anything else. Base64 contains no `<`, `"`, `'` or `&`. Everything the page displays is read out of the embedded TDF at runtime by its own ZIP64-aware reader and written with `textContent`. A fixture whose attribute FQN ended in `"><script>window.__pwned=1</script>` rendered as visible text, the flag stayed undefined, the live DOM contained exactly one script element, and no injected image or SVG elements appeared.
 
@@ -144,8 +144,8 @@ The obvious question was why a wrapper cannot just sign in and decrypt in place.
 
 A design that uses the device grant this way has to accept two costs, and I think both should be printed on the page for the reader:
 
-1. The KAS and the identity provider must allow `Origin: null` in CORS. That does not admit "this file"; it admits every filesystem document and every sandboxed frame. A valid token is still required and no policy decision changes, so nothing becomes readable that was not readable before, but the set of pages allowed to ask gets much larger.
-2. The wrapper's own JavaScript now handles the user's access token and the plaintext. In the console that code is served by the origin that owns the credentials. In a wrapper it arrived in the same file as the ciphertext, from whoever sent it. Opening a wrapper becomes choosing to run the sender's program. I believe this is why commercial products in this space send a link to a web application rather than a self-decrypting document.
+1. The KAS and the identity provider must allow `Origin: null` in CORS. That does not admit "this file"; it admits every filesystem document and sandboxed frames without same-origin privileges. A valid token is still required and no policy decision changes, but token theft or malicious wrapper code can still expose data; the set of pages allowed to ask gets much larger.
+2. The wrapper's own JavaScript now handles the user's access token and the plaintext. In the console that code is served by the origin that owns the credentials. In a wrapper it arrived in the same file as the ciphertext, from whoever sent it. Opening a wrapper becomes choosing to run the sender's program. A trusted web application avoids asking the reader to entrust credentials to code delivered by the sender.
 
 What the variant cannot do is support an arbitrary foreign HTTPS origin. The platform sends credentials in CORS, and the Fetch standard forbids `Access-Control-Allow-Origin: *` together with credentials, so there is no "any origin" value to configure. Supporting foreign hosts would mean turning credentialed CORS off, which is a much larger widening than adding `null`.
 
@@ -164,7 +164,7 @@ Results, run for real on 2026-09-01:
 
 The size cost is the part to budget for. Measured from the demo database, each sealed cell is 1,723 to 1,746 bytes, protecting 8 to 30 bytes of plaintext. Per cell that is 58 to 215 times the plaintext; across the table, 232 bytes of plaintext became 25,967 bytes of ciphertext, about 112 times. Almost all of that is the ZIP container and the self-describing JSON manifest, which is the same size whether the payload is an eight-byte salary or a paragraph.
 
-This demo was originally scoped for NanoTDF, the compact binary TDF variant designed for this kind of workload, which the lab record estimated at about 300 bytes per cell. NanoTDF no longer exists in OpenTDF. It was removed in one sweep in the v0.12.0 releases of 27 January 2026 (platform PR #3013, "fix!: remove nanotdf support"): the KAS nano rewrap path, the Go SDK's create and read functions, `otdfctl`'s nano option, the supporting crypto helpers, and the NanoTDF documentation in the spec repository. The stated rationale was consolidation on the standard format to reduce the burden of maintaining two wire formats, not a vulnerability. The last nano-capable service and SDK release was v0.11.0, from October 2025. Against a v0.25.1 KAS, no client of any age can complete a NanoTDF round trip: an old SDK could still create a nano ciphertext, but nothing could rewrap it. For compact per-field encryption on this platform, that leaves standard TDF with its manifest overhead, or a different design (for example, wrapping one DEK per row or per column group and encrypting fields under it), which trades per-cell policy granularity for size.
+This demo was originally scoped for NanoTDF, the compact binary TDF variant designed for this kind of workload, which the lab record estimated at about 300 bytes per cell. NanoTDF no longer exists in OpenTDF. It was removed in one sweep in the v0.12.0 releases of 27 January 2026 (platform PR #3013, "fix!: remove nanotdf support"): the KAS nano rewrap path, the Go SDK's create and read functions, `otdfctl`'s nano option, the supporting crypto helpers, and the NanoTDF documentation in the spec repository. The release notes identify removal as a breaking change; they do not state a rationale. Against a v0.25.1 KAS, no client of any age can complete a NanoTDF round trip: an old SDK could still create a nano ciphertext, but nothing could rewrap it. For compact per-field encryption on this platform, that leaves standard TDF with its manifest overhead, or a different design (for example, wrapping one DEK per row or per column group and encrypting fields under it), which trades per-cell policy granularity for size.
 
 ### Instrumentation honesty
 

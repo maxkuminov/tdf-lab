@@ -24,7 +24,7 @@ NOTE ON NANOTDF: this demo was originally intended to use NanoTDF (the compact
 binary format, ~300B per cell), but NanoTDF was removed from OpenTDF entirely
 in the v0.12.0 releases of 2026-01-27 (platform PR #3013) — KAS rewrap path,
 Go SDK, otdfctl and the spec docs all at once. Standard TDF (ZTDF) is the only
-format this platform speaks; the cost is ~2.5-3.5KB of zip+manifest per cell.
+format this platform speaks; the cost is about 1.7 KB per cell in the recorded fixture measurements.
 
 Usage:
     python3 dbdemo.py seed          # (re)build the table, sealing as user-a

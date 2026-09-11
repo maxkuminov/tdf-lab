@@ -358,15 +358,15 @@ services:
       # headers WITHOUT any CORS options, so preflights fall through to the
       # platform. They are declared on THIS service so they cannot outlive the
       # router that uses them, and they touch no shared proxy configuration.
-      - "traefik.http.routers.tdf-rtr.middlewares=tdf-ratelimit@docker,tdf-api-headers@docker"
-      - "traefik.http.middlewares.tdf-ratelimit.ratelimit.average=100"
-      - "traefik.http.middlewares.tdf-ratelimit.ratelimit.burst=50"
-      - "traefik.http.middlewares.tdf-api-headers.headers.stsSeconds=63072000"
-      - "traefik.http.middlewares.tdf-api-headers.headers.stsIncludeSubdomains=true"
-      - "traefik.http.middlewares.tdf-api-headers.headers.stsPreload=true"
-      - "traefik.http.middlewares.tdf-api-headers.headers.contentTypeNosniff=true"
-      - "traefik.http.middlewares.tdf-api-headers.headers.referrerPolicy=same-origin"
-      - "traefik.http.middlewares.tdf-api-headers.headers.hostsProxyHeaders=X-Forwarded-Host"
+      - "traefik.http.routers.tdf-rtr.middlewares=example-platform-ratelimit@docker,example-platform-headers@docker"
+      - "traefik.http.middlewares.example-platform-ratelimit.ratelimit.average=100"
+      - "traefik.http.middlewares.example-platform-ratelimit.ratelimit.burst=50"
+      - "traefik.http.middlewares.example-platform-headers.headers.stsSeconds=63072000"
+      - "traefik.http.middlewares.example-platform-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.example-platform-headers.headers.stsPreload=true"
+      - "traefik.http.middlewares.example-platform-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.example-platform-headers.headers.referrerPolicy=same-origin"
+      - "traefik.http.middlewares.example-platform-headers.headers.hostsProxyHeaders=X-Forwarded-Host"
       ## HTTP Services
       - "traefik.http.routers.tdf-rtr.service=tdf-svc"
       - "traefik.http.services.tdf-svc.loadbalancer.server.port=8080"
