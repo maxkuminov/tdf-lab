@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Sealed TDF</title>
+    <style>
+      :root {
+        --paper: #f6f8fa; --sheet: #ffffff; --sunken: #eef2f6; --rule: #d5dce5;
+        --ink: #10151e; --ink-2: #3d4756; --muted: #5c6879; --muted-dim: #616c7c;
+        --seal: #8a5a0b; --seal-soft: #faf2e0; --seal-line: #dec79a;
+        --grant: #0e7357; --grant-soft: #e4f2ec; --grant-line: #94c9b7;
+        --deny: #b0202f; --deny-soft: #fbe8ea; --deny-line: #e3a4ab;
+        --font-panel: ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+        --font-prose: Iowan Old Style, Georgia, 'Times New Roman', serif;
+        --font-data: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color-scheme: light;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--paper); color: var(--ink);
+        font-family: var(--font-panel); font-size: 14px; line-height: 1.5;
+        -webkit-text-size-adjust: 100%;
+      }
+      .wrap { max-width: 760px; margin: 0 auto; padding: 28px 20px 64px; }
+      .eyebrow {
+        font-family: var(--font-panel); font-size: 10.5px; letter-spacing: 0.14em;
+        text-transform: uppercase; color: var(--muted); margin: 0 0 8px; font-weight: 600;
+      }
+      /* A section heading inside a panel body, not a label on the row above it:
+         with no top margin it read as part of the key/value block. */
+      .eyebrow--sect { margin: 20px 0 10px; padding-top: 4px; border-top: 1px solid var(--rule-soft, #e7ecf2); }
+      h1 { font-family: var(--font-panel); font-size: 22px; line-height: 1.25; margin: 0 0 12px; font-weight: 650; letter-spacing: -0.01em; }
+      h2 { font-family: var(--font-panel); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; margin: 0; font-weight: 650; }
+      p.prose { font-family: var(--font-prose); font-size: 15.5px; line-height: 1.62; color: var(--ink-2); margin: 0 0 12px; }
+      p.prose strong { color: var(--ink); font-weight: 600; }
+      .panel { background: var(--sheet); border: 1px solid var(--rule); border-radius: 3px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(16,21,30,.04); }
+      .panel__head { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--rule); }
+      .panel__aside { margin-left: auto; font-family: var(--font-data); font-size: 11px; color: var(--muted-dim); }
+      .panel__body { padding: 16px; }
+      .kv { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1fr); gap: 5px 14px; }
+      .kv__k { font-family: var(--font-panel); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding-top: 2px; }
+      .kv__v { font-family: var(--font-data); font-size: 12.5px; word-break: break-all; min-width: 0; }
+      .tag { display: inline-block; font-family: var(--font-data); font-size: 11px; padding: 2px 7px; border: 1px solid var(--rule); border-radius: 2px; background: var(--sheet); margin: 0 6px 6px 0; max-width: 100%; overflow-wrap: anywhere; }
+      .tag--material { border-color: var(--seal-line); color: var(--seal); background: var(--seal-soft); }
+      .tag--grant { border-color: var(--grant-line); color: var(--grant); background: var(--grant-soft); }
+      .tag--deny { border-color: var(--deny-line); color: var(--deny); background: var(--deny-soft); }
+      .btn {
+        font-family: var(--font-panel); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+        font-weight: 600; padding: 8px 14px; border: 1px solid var(--rule); background: var(--sheet);
+        color: var(--ink); border-radius: 2px; cursor: pointer;
+      }
+      .btn:hover:not(:disabled) { background: var(--sunken); }
+      .btn:disabled { cursor: not-allowed; color: var(--muted-dim); background: var(--sunken); }
+      .btn--primary { background: var(--ink); border-color: var(--ink); color: #fff; }
+      .btn--primary:hover:not(:disabled) { background: var(--ink-2); border-color: var(--ink-2); }
+      .btn-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
+      .notice { font-family: var(--font-prose); font-size: 14.5px; line-height: 1.55; color: var(--ink-2); background: var(--sunken); border-left: 2px solid var(--rule); padding: 10px 14px; margin: 0; }
+      .notice--seal { background: var(--seal-soft); border-left-color: var(--seal); }
+      .notice--deny { background: var(--deny-soft); border-left-color: var(--deny); }
+      .notice--grant { background: var(--grant-soft); border-left-color: var(--grant); }
+      .code { font-family: var(--font-data); font-size: 12.5px; white-space: pre-wrap; word-break: break-word; background: var(--sunken); border: 1px solid var(--rule); border-radius: 2px; padding: 10px 12px; margin: 10px 0 0; max-height: 340px; overflow: auto; }
+      .steps { list-style: none; margin: 0; padding: 0; }
+      .step { display: grid; grid-template-columns: 20px minmax(0,1fr) auto; gap: 4px 10px; align-items: baseline; padding: 7px 0; border-bottom: 1px dashed var(--rule); }
+      .step:last-child { border-bottom: 0; }
+      .step__n { font-family: var(--font-data); font-size: 11px; color: var(--muted-dim); }
+      .step__label { font-family: var(--font-panel); font-size: 13px; }
+      .step__note { grid-column: 2 / -1; font-family: var(--font-prose); font-size: 13.5px; color: var(--muted); }
+      .step__obs { font-family: var(--font-data); font-size: 10px; letter-spacing: 0.04em; color: var(--muted-dim); border: 1px solid var(--rule); border-radius: 2px; padding: 1px 6px; white-space: nowrap; }
+      .step__obs--observed { color: var(--grant); border-color: var(--grant-line); background: var(--grant-soft); }
+      /* A step that never ran carries NO honesty badge. Badging an unreached
+         step "observed" is the exact dishonesty these badges exist to prevent. */
+      .step__obs--none { color: var(--muted-dim); border-style: dashed; }
+      .step--failed .step__label { color: var(--deny); }
+      .step--skipped .step__label { color: var(--muted-dim); }
+      .step--done .step__n::after { content: ' \25AA'; }
+      .foot { font-family: var(--font-data); font-size: 11px; color: var(--muted-dim); margin-top: 26px; border-top: 1px solid var(--rule); padding-top: 12px; }
+      .foot a { color: var(--seal); }
+      .hidden { display: none !important; }
+      @media (max-width: 560px) {
+        .wrap { padding: 20px 14px 48px; }
+        .kv { grid-template-columns: minmax(0,1fr); gap: 2px; }
+        /* ~44px tall: these are the only controls on the page and one of them
+           is the thing a phone user came here to press. */
+        .btn { padding: 13px 16px; font-size: 11.5px; }
+        .btn-row { gap: 12px; }
+      }
+
+      /* ---- device login ------------------------------------------------ */
+      .usercode {
+        font-family: var(--font-data); font-size: 34px; letter-spacing: 0.16em;
+        font-weight: 600; color: var(--seal); background: var(--seal-soft);
+        border: 1px solid var(--seal-line); border-radius: 3px;
+        padding: 14px 18px; margin: 12px 0 4px; text-align: center;
+        word-break: break-all; user-select: all;
+      }
+      .verify { font-family: var(--font-data); font-size: 13px; word-break: break-all; }
+      .verify a { color: var(--seal); }
+      .poll { font-family: var(--font-data); font-size: 11.5px; color: var(--muted-dim); margin: 8px 0 0; }
+      /* The security note is not a decoration. It is the thing this design
+         costs, and it gets the visual weight of a warning, not a footnote. */
+      .risk {
+        border: 1px solid var(--seal-line); border-left-width: 3px;
+        background: var(--seal-soft); padding: 12px 14px; margin: 14px 0 0;
+        font-family: var(--font-prose); font-size: 14.5px; line-height: 1.55; color: var(--ink-2);
+      }
+      .risk strong { color: var(--ink); }
+      .risk + .risk { margin-top: 10px; }
+
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <p class="eyebrow">Sealed document &middot; OpenTDF</p>
+      <h1 id="hd-title">Reading this file&hellip;</h1>
+      <div id="app"></div>
+      <noscript>
+        <p class="notice notice--deny">
+          This page reads and decrypts the sealed file it carries using JavaScript, and JavaScript
+          is turned off. The ciphertext is still intact in this file &mdash; open it in the lab
+          console instead.
+        </p>
+      </noscript>
+      <p class="foot">
+        This document carries a Trusted Data Format payload and a complete reader. It is an
+        <strong>executable document</strong>: an HTML file can run code the moment you open it.
+        This one reads itself, signs you in and decrypts &mdash; but you could not tell that by
+        looking, and neither can anyone else. Treat .html files from senders you do not know
+        exactly as you would treat any other executable attachment.
+      </p>
+    </div>
+    <input type="hidden" id="data-input" value="__TDF_B64__" />
+    <input type="hidden" id="meta-input" value="__META_B64__" />
+    <script>
+<!--SEALED_RUNTIME-->
+    </script>
+  </body>
+</html>

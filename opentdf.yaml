@@ -1,0 +1,208 @@
+# =============================================================================
+#  OpenTDF platform configuration - tdf-lab (phase 1)
+#  Mounted read-only at /etc/opentdf/opentdf.yaml
+#  Derived from opentdf-example.yaml @ service/v0.25.1
+#  https://github.com/opentdf/platform/blob/service/v0.25.1/opentdf-example.yaml
+#
+#  ---------------------------------------------------------------------------
+#  SECRETS AND THIS FILE
+#  ---------------------------------------------------------------------------
+#  The two secret-bearing keys below hold the literal string CHANGEME-VIA-ENV
+#  and are overridden at runtime from the container environment:
+#
+#     db.password                          <- OPENTDF_DB_PASSWORD
+#     services.entityresolution.clientsecret <- OPENTDF_SERVICES_ENTITYRESOLUTION_CLIENTSECRET
+#
+#  The config loader is viper with SetEnvPrefix("opentdf"),
+#  SetEnvKeyReplacer(".", "_") and AutomaticEnv (service/pkg/config/legacy_loader.go).
+#  viper.Unmarshal only reads the environment for keys it already knows about,
+#  so the placeholders MUST stay here - deleting them silently disables the
+#  override. Note also that the replacer maps every underscore to a dot, so an
+#  env var only works when no single path segment contains an underscore
+#  (OPENTDF_DB_PASSWORD is fine; OPENTDF_DB_CONNECT_TIMEOUT_SECONDS is not).
+#
+#  If the override ever fails you will see a loud connection/auth error at
+#  startup, never a silent fallback to an insecure state.
+# =============================================================================
+
+# Runs every registered service in one process: policy, authorization, kas,
+# entityresolution, wellknown. Documented at
+# https://github.com/opentdf/platform/blob/service/v0.25.1/docs/Configuring.md
+mode: all
+
+logger:
+  level: info
+  # json so a log pipeline can parse it without a regex
+  type: json
+  output: stdout
+
+# --- database ----------------------------------------------------------------
+db:
+  host: tdf-postgres
+  port: 5432
+  database: opentdf
+  user: opentdf
+  password: CHANGEME-VIA-ENV      # <- OPENTDF_DB_PASSWORD
+  # Postgres is on the internal-only lab-net network and serves plaintext.
+  # 'disable' rather than the 'prefer' default so a failed TLS negotiation
+  # can never be mistaken for a connectivity problem.
+  sslmode: disable
+  schema: opentdf
+  runMigration: true
+  pool:
+    max_connection_count: 4
+    min_connection_count: 0
+
+# --- cache -------------------------------------------------------------------
+# The platform's ristretto cache defaults to a 1gb max_cost, which is larger
+# than this container's entire 512m mem_limit. A cgroup cap is an INPUT to the
+# workload, not a safety net around it - leaving the default here invites the
+# OOM the cap exists to prevent.
+cache:
+  ristretto:
+    max_cost: 64mb
+
+services:
+  kas:
+    # false = legacy static keyring from server.cryptoProvider below.
+    # true would move key material into policy-backed key management and
+    # requires a root_key + provider registration; out of scope for phase 1.
+    key_management: false
+    eccertid: e1
+    rsacertid: r1
+
+  entityresolution:
+    # Keycloak at its ROOT path (no KC_HTTP_RELATIVE_PATH in the compose file),
+    # reached over the Traefik hairpin at its PUBLIC name.
+    url: https://keycloak.lab.example
+    clientid: "entity-resolution"
+    clientsecret: CHANGEME-VIA-ENV   # <- OPENTDF_SERVICES_ENTITYRESOLUTION_CLIENTSECRET
+    realm: "lab-realm"
+    # false => gocloak uses the modern admin paths (/admin/realms, /realms).
+    # true is ONLY for Keycloak < 17, where everything hangs off /auth.
+    # Getting this wrong produces 404s from the admin API, not a clear error.
+    legacykeycloak: false
+    inferid:
+      from:
+        email: true
+        username: true
+
+  policy:
+    list_request_limit_default: 1000
+    list_request_limit_max: 2500
+
+server:
+  port: 8080
+  # Advertised hostname. Only consulted when services.kas.key_management is
+  # true, but set correctly anyway so enabling it later does not silently
+  # publish http://localhost:8080 as the KAS URI.
+  public_hostname: platform.lab.example
+
+  # TLS terminates at the reverse proxy. The platform speaks cleartext
+  # HTTP/1.1 + h2c on :8080 and is only reachable on the internal lab-net network.
+  tls:
+    enabled: false
+
+  auth:
+    enabled: true
+    dpop:
+      enforce: false
+    # Must appear in the token's `aud`. The audience-mapper in
+    # keycloak_data.yaml injects exactly this value on every client.
+    audience: "https://platform.lab.example"
+    # Must EXACTLY equal the `iss` claim external clients receive. That is why
+    # Keycloak is pinned to KC_HOSTNAME=https://keycloak.lab.example and why the
+    # platform resolves that public name through the Traefik hairpin rather
+    # than talking to the container directly.
+    issuer: https://keycloak.lab.example/realms/lab-realm
+    policy:
+      username_claim: # preferred_username
+      groups_claim:   # realm_access.roles
+      client_id_claim: # azp
+      # Maps Keycloak realm roles onto the platform's built-in casbin roles.
+      # The default authorization engine is casbin v1 (v2 is opt-in), and the
+      # v1 builtin policy has no opinion about realm role names - these two
+      # groupings are what make opentdf-admin/opentdf-standard mean anything.
+      extension: |
+        g, opentdf-admin, role:admin
+        g, opentdf-standard, role:standard
+
+  cors:
+    enabled: true
+    # Deliberately NOT "*": allowcredentials is true, and "*" plus credentials
+    # is both a spec violation and a real hole. Add a lab UI origin here when
+    # phase 2 needs one.
+    allowedorigins:
+      - "https://platform.lab.example"
+      - "https://keycloak.lab.example"
+      # DESIGN TRADE-OFF (phase 6). A file:// document sends Origin: null, so
+      # this entry is what lets a self-decrypting wrapper opened from disk call
+      # the KAS. "null" is not "this file": it admits EVERY opaque-origin
+      # document (file://, sandboxed iframes, data: URLs). What it accepts is
+      # cross-origin reads of platform responses from any such document; what
+      # it buys is a wrapper that works with no web origin at all. A valid
+      # bearer token is still required for every call, so the entry widens who
+      # can ASK, not who is ENTITLED. Delete this line if you do not use the
+      # wrapper, and see README.md "Design trade-offs".
+      - "null"
+      # 2026-08-27 (phase 2): the browser console at tdf.lab.example talks
+      # to this platform directly from the user's browser - policy reads,
+      # attribute lookup during encrypt, and the KAS rewrap on decrypt. Without
+      # this entry every one of those is a CORS failure that shows up in the
+      # SPA as an opaque "TypeError: Failed to fetch", never as a 403.
+      - "https://tdf.lab.example"
+    allowedmethods:
+      - GET
+      - POST
+      - PATCH
+      - PUT
+      - DELETE
+      - OPTIONS
+    allowedheaders:
+      - Accept
+      - Accept-Encoding
+      - Authorization
+      - Connect-Protocol-Version
+      - Content-Length
+      - Content-Type
+      - Dpop
+      - X-CSRF-Token
+      - X-Requested-With
+      - X-Rewrap-Additional-Context
+    exposedheaders:
+      - Link
+    allowcredentials: true
+    maxage: 3600
+
+  grpc:
+    reflectionEnabled: true
+
+  # --- KAS key material ------------------------------------------------------
+  # File-based PEMs via the "standard" crypto provider. PKCS#11 is the other
+  # supported provider and is explicitly out of scope for phase 1.
+  #
+  # Generated by openssl into ./keys, mounted read-only at /keys:
+  #   kas-private.pem     RSA-2048 private key  (PKCS#8)
+  #   kas-cert.pem        RSA-2048 PUBLIC KEY   (bare SPKI, NOT an X.509 cert -
+  #                       this mirrors the upstream init-temp-keys.sh exactly;
+  #                       ocrypto.FromPublicPEM accepts either form)
+  #   kas-ec-private.pem  EC P-256 (secp256r1/prime256v1) private key
+  #   kas-ec-cert.pem     self-signed X.509 cert for the same EC key
+  #
+  # The upstream example also lists three hybrid post-quantum keys
+  # (kid x1/h1/h2, alg hpqt:*). Those cannot be produced with openssl - they
+  # need the platform's own `service/cmd/keygen` Go tool - and nothing in this
+  # lab requests them, so they are omitted. Add them in a later phase if you
+  # want to exercise PQ rewrap.
+  cryptoProvider:
+    type: standard
+    standard:
+      keys:
+        - kid: r1
+          alg: rsa:2048
+          private: /keys/kas-private.pem
+          cert: /keys/kas-cert.pem
+        - kid: e1
+          alg: ec:secp256r1
+          private: /keys/kas-ec-private.pem
+          cert: /keys/kas-ec-cert.pem

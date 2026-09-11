@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta
+      name="description"
+      content="A browser console for the OpenTDF learning lab: encrypt a file to a policy attribute, watch the key access object get built, and see the Key Access Server allow or deny the rewrap."
+    />
+    <!-- Inline data URI, not a file: without any favicon the SPA fallback
+         returned index.html for /favicon.ico on every single page load, so the
+         document was fetched twice. Self-contained, no extra request. -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%23f6f8fa'/%3E%3Crect x='0.5' y='0.5' width='31' height='31' rx='3.5' fill='none' stroke='%23d5dce5'/%3E%3Cpath d='M8 9h16v3H8z' fill='%238a5a0b'/%3E%3Cpath d='M8 15h10v3H8z' fill='%230e7357'/%3E%3Cpath d='M8 21h13v3H8z' fill='%23b0202f'/%3E%3C/svg%3E"
+    />
+    <title>TDF Lab Console</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>The TDF Lab Console does all of its cryptography in the browser, so it needs JavaScript.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

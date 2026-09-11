@@ -1,0 +1,49 @@
+# Secrets and per-deployment config. Only the *.example files are tracked.
+.env
+.env.*
+!.env.example
+keycloak_data.yaml
+keycloak_data.yaml.*
+!keycloak_data.example.yaml
+*.bak
+*.bak-*
+
+# KAS key material (generate locally; see README.md)
+keys/
+*.pem
+*.key
+
+# Database dumps and backups
+backups/
+*.sql
+*.dump
+
+# Generated demo data: sealed blobs, the encrypted SQLite table, its JSON export
+*.tdf
+*.tdf.html
+*.sqlite
+*.sqlite3
+*.db
+records.json
+
+# Node / build output
+node_modules/
+dist/
+webapp/e2e/dist/
+webapp/e2e/out/
+webapp/src/wrapper/generated/
+
+# Local test fixtures
+scratch-fixtures/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editors and OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+*.log

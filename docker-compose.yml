@@ -1,0 +1,509 @@
+# =============================================================================
+#  ZTDF / OpenTDF learning lab - reference compose file
+#
+#  Self-contained stack: OpenTDF platform (mode "all" = policy + authorization
+#  + built-in KAS + ERS + wellknown), Keycloak, a dedicated PostgreSQL, the
+#  static web console (nginx) and the ciphertext-only share API (node).
+#  Everything sits on the internal network `lab-net`; the only way in is an
+#  EXISTING reverse proxy (Traefik, via the labels below) that you run
+#  separately and attach to `lab-net`.
+#
+#    https://platform.lab.example  -> tdf-platform:8080   (h2c)
+#    https://keycloak.lab.example  -> tdf-keycloak:8080   (http/1.1)
+#    https://tdf.lab.example       -> tdf-console:80      (static SPA + /api/)
+#
+#  Hostnames come from .env (TDF_*_HOST). TLS terminates at the reverse proxy;
+#  nothing in this file speaks TLS.
+#
+#  This is a REFERENCE deployment, not a turnkey local quickstart: it assumes
+#  a reverse proxy with real certificates and DNS for the three names above.
+#  See README.md "Running it" for what has to exist first.
+#
+#  ---------------------------------------------------------------------------
+#  PREREQUISITE 1 - create the network out-of-band
+#  ---------------------------------------------------------------------------
+#  lab-net is declared `external` below. Create it FIRST, exactly like this:
+#
+#    docker network create --driver bridge --internal \
+#      --opt com.docker.network.bridge.gateway_mode_ipv4=isolated lab-net
+#
+#  `--internal` alone is NOT isolation - see the networks: block below.
+#  ---------------------------------------------------------------------------
+#  PREREQUISITE 2 - the reverse-proxy hairpin
+#  ---------------------------------------------------------------------------
+#  An internal network means containers on lab-net have NO route out. But the
+#  platform MUST fetch Keycloak's OIDC discovery + JWKS at the *public* issuer
+#  URL (https://keycloak.lab.example/realms/lab-realm/...), because the `iss`
+#  claim in the tokens external clients present has to match what the
+#  platform verifies.
+#
+#  Solution: the reverse-proxy container joins lab-net with network ALIASES
+#  for platform.lab.example and keycloak.lab.example. In-lab DNS for those
+#  public names then resolves to the proxy's lab-side interface, which serves
+#  the real certificate and routes straight back to Keycloak. The platform
+#  validates TLS normally against the public CA roots baked into its image
+#  (/etc/ssl/certs/ca-certificates.crt, referenced by SSL_CERT_FILE).
+#
+#  That alias must exist BEFORE `docker compose up -d` here, or the platform
+#  and the provisioning job fail to resolve keycloak.lab.example.
+#  ---------------------------------------------------------------------------
+#
+#  Versions (pinned via .env; the lab ran these in 2026-08/09):
+#    platform  service/v0.25.1  (2026-08-19)
+#    keycloak  26.x             (see .env.example)
+#    postgres  15.19-alpine     (15.x is what the upstream OpenTDF compose uses)
+# =============================================================================
+
+# Per-service log caps, kept here rather than in /etc/docker/daemon.json so
+# changing them never needs a daemon restart.
+x-tdf-logging: &tdf-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# ---------------------------------------------------------------------------
+# lab-net is EXTERNAL and MUST be created out-of-band, before either this
+# stack or the reverse proxy starts. Neither project owns it, so neither can
+# destroy it on `down` - which matters, because the reverse proxy is attached
+# to it and declares it external too.
+#
+#   docker network create --driver bridge --internal \
+#     --opt com.docker.network.bridge.gateway_mode_ipv4=isolated lab-net
+#
+# `internal: true` ALONE IS NOT ISOLATION. It blocks off-host routing, but the
+# host still holds the bridge's gateway address, so a lab container can dial
+# host services on it (in testing, a container on a plain internal network
+# reached the host's SSH port on the bridge gateway address).
+#
+# gateway_mode_ipv4=isolated is the fix (tested on Docker 29.x): no gateway
+# address is allocated at all and the host has zero addresses in the subnet.
+# Container-to-container traffic and multi-label network aliases
+# (platform.lab.example -> the proxy's lab-side interface) keep working.
+#
+# There is no compose-file syntax that expresses that driver option, which is
+# why the network is declared external here rather than defined inline.
+# ---------------------------------------------------------------------------
+networks:
+  lab-net:
+    name: lab-net
+    external: true
+
+volumes:
+  lab_pgdata:
+    name: lab_pgdata
+  # Phase 3: the shared library's ciphertext + metadata index.
+  # `docker compose down -v` DESTROYS THIS TOO - every uploaded file. It is a
+  # separate volume from the databases so it can be backed up or kept
+  # independently, but `down -v` takes all volumes in the project.
+  lab_sharedata:
+    name: lab_sharedata
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL - shared by the platform and Keycloak, one database each.
+  # Reachable ONLY from lab-net. No published ports, ever.
+  # ---------------------------------------------------------------------------
+  tdf-postgres:
+    logging: *tdf-logging
+    container_name: tdf-postgres
+    image: ${TDF_POSTGRES_IMAGE}
+    restart: unless-stopped
+    user: postgres
+    networks:
+      - lab-net
+    security_opt:
+      - no-new-privileges:true
+    cpu_shares: 256
+    mem_limit: 512m
+    memswap_limit: 1024m
+    stop_grace_period: 60s
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # consumed by postgres-init/01-keycloak-db.sh on FIRST init only
+      KC_DB_DATABASE: ${KC_DB_DATABASE}
+      KC_DB_USERNAME: ${KC_DB_USERNAME}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD}
+    volumes:
+      - lab_pgdata:/var/lib/postgresql/data
+      # runs only when the data directory is empty (first boot)
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    # Two assertions, not one. pg_isready alone goes green too early and stays
+    # green forever on a half-initialised volume: docker-entrypoint runs the
+    # scripts in /docker-entrypoint-initdb.d against a socket-only server, and
+    # it only ever runs them when PG_VERSION is absent. If 01-keycloak-db.sh
+    # fails partway, the data directory is already initialised, the script
+    # never runs again, and Keycloak fails later with an opaque
+    # "database keycloak does not exist". Checking for the database here turns
+    # that into a container that never reports healthy, so nothing downstream
+    # starts and the cause is obvious.
+    # Recovery is destructive: `docker compose down -v` (drops BOTH databases).
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} && psql -U ${POSTGRES_USER} -d ${POSTGRES_DB} -tAc \"SELECT 1 FROM pg_database WHERE datname = '${KC_DB_DATABASE}'\" | grep -q 1"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Keycloak 26.4 - production mode behind a reverse proxy.
+  #   KC_HOSTNAME as a FULL URL      -> every issued URL, and the `iss` claim,
+  #                                     is https://keycloak.lab.example/...
+  #   KC_HTTP_ENABLED=true           -> speak plain HTTP on :8080 to Traefik
+  #   KC_PROXY_HEADERS=xforwarded    -> trust Traefik's X-Forwarded-* headers
+  # No KC_HTTP_RELATIVE_PATH: Keycloak serves at the ROOT path, so realm URLs
+  # are /realms/lab-realm/... (no /auth). opentdf.yaml and the provisioning
+  # endpoint below both assume this.
+  # ---------------------------------------------------------------------------
+  tdf-keycloak:
+    logging: *tdf-logging
+    container_name: tdf-keycloak
+    image: ${TDF_KEYCLOAK_IMAGE}
+    restart: unless-stopped
+    # plain `start` (not --optimized): the image auto-runs `build` when the
+    # build-time options change. Costs ~30-60s on first boot, then caches.
+    command: ["start"]
+    depends_on:
+      tdf-postgres:
+        condition: service_healthy
+    networks:
+      - lab-net
+    security_opt:
+      - no-new-privileges:true
+    cpu_shares: 256
+    mem_limit: 1g
+    memswap_limit: 2g
+    stop_grace_period: 60s
+    environment:
+      # --- database ---
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://tdf-postgres:5432/${KC_DB_DATABASE}
+      KC_DB_USERNAME: ${KC_DB_USERNAME}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD}
+      # --- hostname / proxy (Keycloak 26 names; these CHANGED across 24/25/26) ---
+      KC_HOSTNAME: https://${TDF_KEYCLOAK_HOST}
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: "8080"
+      KC_PROXY_HEADERS: xforwarded
+      # --- health on the management port 9000 (default) ---
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_MANAGEMENT_PORT: "9000"
+      # --- bootstrap admin (26.x names; KEYCLOAK_ADMIN* was removed) ---
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD}
+      # The Keycloak image already sets -XX:MaxRAMPercentage=70, which is
+      # cgroup-aware, so the 1g mem_limit really does cap the heap at ~700m.
+      JAVA_OPTS_APPEND: ""
+    # The Keycloak container ships NO curl and NO wget (deliberately stripped).
+    # This is the exact bash /dev/tcp probe from the official health guide:
+    # https://www.keycloak.org/observability/health
+    # Invoked as `bash -c` explicitly, NOT CMD-SHELL: /dev/tcp is a bash
+    # builtin, not POSIX sh. kc.sh itself is a bash script so bash is present.
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - "{ printf 'HEAD /health/ready HTTP/1.0\\r\\n\\r\\n' >&0; grep 'HTTP/1.0 200'; } 0<>/dev/tcp/127.0.0.1/9000"
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 180s
+    labels:
+      - "traefik.enable=true"
+      # lab-net is internal-only; this tells Traefik which of its own networks
+      # to dial the backend on. Without it Traefik uses its default
+      # --providers.docker.network, which this container is deliberately NOT on.
+      - "traefik.docker.network=lab-net"
+      ## HTTP Routers
+      - "traefik.http.routers.tdfkc-rtr.entrypoints=https"
+      - "traefik.http.routers.tdfkc-rtr.rule=Host(`${TDF_KEYCLOAK_HOST}`)"
+      - "traefik.http.routers.tdfkc-rtr.tls=true"
+      ## Middlewares - Keycloak has its own login; rate-limit + secure headers only.
+      # Declared on this container (not shared with tdf-platform): Keycloak must
+      # be routable before the platform container exists, because provisioning
+      # reaches it through the proxy hairpin.
+      - "traefik.http.routers.tdfkc-rtr.middlewares=tdfkc-ratelimit@docker,tdfkc-headers@docker"
+      - "traefik.http.middlewares.tdfkc-ratelimit.ratelimit.average=100"
+      - "traefik.http.middlewares.tdfkc-ratelimit.ratelimit.burst=50"
+      - "traefik.http.middlewares.tdfkc-headers.headers.stsSeconds=63072000"
+      - "traefik.http.middlewares.tdfkc-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.tdfkc-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.tdfkc-headers.headers.referrerPolicy=same-origin"
+      - "traefik.http.middlewares.tdfkc-headers.headers.hostsProxyHeaders=X-Forwarded-Host"
+      ## HTTP Services
+      - "traefik.http.routers.tdfkc-rtr.service=tdfkc-svc"
+      - "traefik.http.services.tdfkc-svc.loadbalancer.server.port=8080"
+
+  # ---------------------------------------------------------------------------
+  # One-shot realm provisioning. Same image as the platform; runs
+  #   `opentdf provision keycloak`
+  # against the PUBLIC Keycloak URL (through the Traefik hairpin) and creates
+  # the realm, roles, clients and the user-a/user-b test users from
+  # keycloak_data.yaml.
+  #
+  # Deliberate deviation from the "restart: unless-stopped everywhere" rule:
+  # this is a run-to-completion job, and unless-stopped would loop it forever.
+  # It is idempotent - Keycloak 409s on existing objects and the fixture code
+  # treats that as success - so a re-`up` is safe.
+  # ---------------------------------------------------------------------------
+  tdf-provision-keycloak:
+    logging: *tdf-logging
+    container_name: tdf-provision-keycloak
+    image: ${TDF_PLATFORM_IMAGE}
+    restart: "no"
+    user: ${TDF_RUN_AS}
+    depends_on:
+      tdf-keycloak:
+        condition: service_healthy
+    networks:
+      - lab-net
+    security_opt:
+      - no-new-privileges:true
+    cpu_shares: 256
+    mem_limit: 256m
+    memswap_limit: 512m
+    environment:
+      # uid 1000 is not in the image's /etc/passwd; Go's os.UserHomeDir()
+      # (called by the config loader) reads $HOME, so pin it explicitly.
+      HOME: /
+    command:
+      - provision
+      - keycloak
+      - "-e"
+      - "https://${TDF_KEYCLOAK_HOST}"
+      - "-u"
+      - "${KC_BOOTSTRAP_ADMIN_USERNAME}"
+      - "-p"
+      - "${KC_BOOTSTRAP_ADMIN_PASSWORD}"
+      - "-f"
+      - /etc/opentdf/keycloak_data.yaml
+    volumes:
+      - ./keycloak_data.yaml:/etc/opentdf/keycloak_data.yaml:ro
+
+  # ---------------------------------------------------------------------------
+  # OpenTDF platform, mode "all": policy + authorization + KAS + ERS + wellknown
+  # in one process on one port. Speaks Connect-RPC / gRPC / REST on :8080.
+  # ---------------------------------------------------------------------------
+  tdf-platform:
+    logging: *tdf-logging
+    container_name: tdf-platform
+    image: ${TDF_PLATFORM_IMAGE}
+    restart: unless-stopped
+    user: ${TDF_RUN_AS}
+    command: ["start", "--config-file", "/etc/opentdf/opentdf.yaml"]
+    depends_on:
+      tdf-postgres:
+        condition: service_healthy
+      tdf-keycloak:
+        condition: service_healthy
+      tdf-provision-keycloak:
+        condition: service_completed_successfully
+    networks:
+      - lab-net
+    security_opt:
+      - no-new-privileges:true
+    cpu_shares: 256
+    mem_limit: 512m
+    memswap_limit: 1024m
+    stop_grace_period: 30s
+    environment:
+      HOME: /
+      # Secrets are injected as env, NOT written into opentdf.yaml.
+      #
+      # HOW THIS WORKS (and why the keys must ALSO exist in the YAML):
+      # the platform's config loader is viper with SetEnvPrefix("opentdf"),
+      # SetEnvKeyReplacer(".", "_") and AutomaticEnv. viper.Unmarshal only
+      # consults the environment for keys it ALREADY KNOWS about, so a key that
+      # is absent from opentdf.yaml can never be supplied by env alone. Every
+      # variable below has a matching placeholder key in opentdf.yaml.
+      OPENTDF_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      OPENTDF_SERVICES_ENTITYRESOLUTION_CLIENTSECRET: ${CLIENT_SECRET_ERS}
+    volumes:
+      - ./opentdf.yaml:/etc/opentdf/opentdf.yaml:ro
+      - ./keys:/keys:ro
+    # NO healthcheck. The image is cgr.dev/chainguard/glibc-dynamic - no shell,
+    # no curl, no wget - so there is nothing to run a probe with, and the
+    # `opentdf` binary has no health subcommand. Liveness is observed from
+    # outside instead:  curl -fsS https://platform.lab.example/healthz
+    # Point an external uptime monitor at that URL.
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=lab-net"
+      ## HTTP Routers
+      - "traefik.http.routers.tdf-rtr.entrypoints=https"
+      - "traefik.http.routers.tdf-rtr.rule=Host(`${TDF_PLATFORM_HOST}`)"
+      - "traefik.http.routers.tdf-rtr.tls=true"
+      ## Middlewares - the platform enforces its own OIDC bearer auth.
+      #
+      # NOT a generic "secure headers" chain. A typical one sets
+      # `accessControlAllowMethods`, and a Traefik headers middleware
+      # with that option ANSWERS CORS PREFLIGHTS ITSELF: an OPTIONS carrying
+      # Access-Control-Request-Method never reaches the platform, and Traefik's
+      # canned reply advertises only GET/OPTIONS/PUT and carries NO
+      # Access-Control-Allow-Origin at all. Every Connect-RPC call from a browser
+      # is a POST, so the browser blocks all of them - and the platform's own
+      # server.cors block, which is correct, is never consulted. Observed
+      # 2026-08-27 with a preflight like:
+      #   curl -i -X OPTIONS https://platform.lab.example/policy.attributes.AttributesService/ListAttributes \
+      #     -H 'Origin: https://tdf.lab.example' -H 'Access-Control-Request-Method: POST'
+      #   -> 200, access-control-allow-methods: GET,OPTIONS,PUT, no allow-origin
+      #
+      # These two label-defined middlewares provide a rate limit and security
+      # headers WITHOUT any CORS options, so preflights fall through to the
+      # platform. They are declared on THIS service so they cannot outlive the
+      # router that uses them, and they touch no shared proxy configuration.
+      - "traefik.http.routers.tdf-rtr.middlewares=tdf-ratelimit@docker,tdf-api-headers@docker"
+      - "traefik.http.middlewares.tdf-ratelimit.ratelimit.average=100"
+      - "traefik.http.middlewares.tdf-ratelimit.ratelimit.burst=50"
+      - "traefik.http.middlewares.tdf-api-headers.headers.stsSeconds=63072000"
+      - "traefik.http.middlewares.tdf-api-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.tdf-api-headers.headers.stsPreload=true"
+      - "traefik.http.middlewares.tdf-api-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.tdf-api-headers.headers.referrerPolicy=same-origin"
+      - "traefik.http.middlewares.tdf-api-headers.headers.hostsProxyHeaders=X-Forwarded-Host"
+      ## HTTP Services
+      - "traefik.http.routers.tdf-rtr.service=tdf-svc"
+      - "traefik.http.services.tdf-svc.loadbalancer.server.port=8080"
+      # h2c: the platform serves gRPC and Connect-RPC on the SAME cleartext
+      # port, which requires prior-knowledge HTTP/2. This mirrors the upstream
+      # quickstart's Caddy config (`to h2c://platform:8080 ... versions h2c 2 1.1`).
+      # Traefik still accepts HTTP/1.1 from clients and upgrades to the backend,
+      # so plain REST/Connect clients and browsers keep working.
+      # If a client ever breaks on this, drop THIS ONE LINE to fall back to
+      # HTTP/1.1 - Connect-RPC works over 1.1, only true gRPC needs h2c.
+      - "traefik.http.services.tdf-svc.loadbalancer.server.scheme=h2c"
+
+  # ---------------------------------------------------------------------------
+  # tdf-console - the browser console (phase 2). Static files only: the SPA is
+  # built ahead of time into ./webapp/dist and this container just serves it.
+  #
+  # It holds NO secret. `web-console` is a PUBLIC Keycloak client (authorization
+  # code + PKCE, no client secret exists for it), so nothing from .env belongs
+  # in the bundle and nothing here needs the keys/ mount.
+  #
+  # Build the bundle in a throwaway container (no node needed on the host).
+  # npm reaches the registry over the DEFAULT bridge; this service is on
+  # lab-net only, and lab-net still has no egress:
+  #
+  #   cd webapp
+  #   docker run --rm -v "$PWD":/app -w /app -u "$(id -u):$(id -g)" \
+  #     -e HOME=/tmp node:22-alpine sh -c 'npm ci && npm run build'
+  #   cd .. && docker compose up -d tdf-console
+  # ---------------------------------------------------------------------------
+  tdf-console:
+    logging: *tdf-logging
+    container_name: tdf-console
+    image: nginx:1.29.8-alpine
+    restart: unless-stopped
+    networks:
+      - lab-net
+    security_opt:
+      - no-new-privileges:true
+    cpu_shares: 256
+    mem_limit: 128m
+    memswap_limit: 256m
+    stop_grace_period: 10s
+    volumes:
+      # Read-only: this container must never be able to alter what it serves.
+      - ./webapp/dist:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    # nginx:1.29.8-alpine ships both wget and curl (verified 2026-08-27).
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=lab-net"
+      ## HTTP Routers
+      - "traefik.http.routers.tdflab-rtr.entrypoints=https"
+      - "traefik.http.routers.tdflab-rtr.rule=Host(`${TDF_WEB_HOST}`)"
+      - "traefik.http.routers.tdflab-rtr.tls=true"
+      ## Middlewares - a plain static origin serving no cross-origin API, so
+      # any shared secure-headers chain would also be fine here.
+      - "traefik.http.routers.tdflab-rtr.middlewares=tdflab-ratelimit@docker,tdflab-headers@docker"
+      - "traefik.http.middlewares.tdflab-ratelimit.ratelimit.average=100"
+      - "traefik.http.middlewares.tdflab-ratelimit.ratelimit.burst=50"
+      - "traefik.http.middlewares.tdflab-headers.headers.stsSeconds=63072000"
+      - "traefik.http.middlewares.tdflab-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.tdflab-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.tdflab-headers.headers.referrerPolicy=same-origin"
+      - "traefik.http.middlewares.tdflab-headers.headers.hostsProxyHeaders=X-Forwarded-Host"
+      ## HTTP Services
+      - "traefik.http.routers.tdflab-rtr.service=tdflab-svc"
+      - "traefik.http.services.tdflab-svc.loadbalancer.server.port=80"
+
+  # ---------------------------------------------------------------------------
+  # tdf-share-api - the shared library's backend, and deliberately the
+  # UNTRUSTED half of this lab.
+  #
+  # It stores sealed .tdf files and metadata. It never sees a plaintext byte, a
+  # data encryption key, or a password: the browser encrypts before upload and
+  # decrypts after download. The only thing this service can do with a file it
+  # holds is hand the same ciphertext back - reading it still costs a rewrap
+  # against the KAS, which this service has no part in. That is the point:
+  # possession is not access.
+  #
+  # NOT a self-built image. It runs the stock node image with the source
+  # bind-mounted, so there is no image to build or push. Install its dependencies with the same build-container idiom as
+  # the webapp - nothing is installed on the host:
+  #
+  #   cd shareapi
+  #   docker run --rm -v "$PWD":/app -w /app -u "$(id -u):$(id -g)" \
+  #     -e HOME=/tmp node:22-alpine sh -c 'npm ci'
+  #
+  # No Traefik labels and no CORS: it is reachable ONLY through the nginx
+  # same-origin proxy at https://tdf.lab.example/api/ (see nginx.conf), so
+  # it has no router, no published port and no cross-origin surface at all.
+  # ---------------------------------------------------------------------------
+  tdf-share-api:
+    logging: *tdf-logging
+    container_name: tdf-share-api
+    image: ${TDF_NODE_IMAGE}
+    restart: unless-stopped
+    # uid 1000 rather than the image's `node` user by name: the named volume
+    # below is chowned to 1000:1000 out of band (see README.md) because
+    # Docker creates a fresh volume root-owned when the mount point does not
+    # exist in the image.
+    user: "1000:1000"
+    working_dir: /app
+    command: ["node", "src/server.js"]
+    networks:
+      - lab-net
+    security_opt:
+      - no-new-privileges:true
+    cpu_shares: 256
+    mem_limit: 256m
+    memswap_limit: 512m
+    stop_grace_period: 15s
+    environment:
+      NODE_ENV: production
+      HOME: /tmp
+      PORT: "3000"
+      DATA_DIR: /data
+      OIDC_ISSUER: https://${TDF_KEYCLOAK_HOST}/realms/lab-realm
+      OIDC_AUDIENCE: https://${TDF_PLATFORM_HOST}
+      # web-console is the browser console; cli is the only way to get a
+      # USER token headlessly, which the verification harness needs.
+      ALLOWED_AZP: web-console,cli
+      MAX_FILE_BYTES: "20971520"
+      MAX_FILES_PER_USER: "50"
+      MAX_BYTES_PER_USER: "209715200"
+    volumes:
+      # source read-only: the API must never be able to rewrite its own code
+      - ./shareapi:/app:ro
+      - lab_sharedata:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

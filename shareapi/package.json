@@ -1,0 +1,13 @@
+{
+  "name": "tdf-share-api",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Ciphertext-only file store for the TDF lab. Never sees plaintext or keys.",
+  "engines": { "node": ">=22" },
+  "scripts": { "start": "node src/server.js" },
+  "dependencies": {
+    "express": "5.2.1",
+    "jose": "6.2.10"
+  }
+}

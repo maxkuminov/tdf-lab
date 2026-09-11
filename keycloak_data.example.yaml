@@ -1,0 +1,271 @@
+# =============================================================================
+#  EXAMPLE FILE. Copy to keycloak_data.yaml (gitignored), then replace every
+#  CHANGE_ME_* value with a strong random value (e.g. `openssl rand -hex 16`)
+#  that matches the corresponding entry in .env. Replace the *.lab.example
+#  hostnames with your own.
+#
+#  Keycloak realm provisioning data for the OpenTDF platform's
+#      opentdf provision keycloak -e <endpoint> -u <admin> -p <pw> -f <this>
+#
+#  Schema is lib/fixtures.KeycloakData (gocloak v13 representations), see
+#  https://github.com/opentdf/platform/blob/service/v0.25.1/lib/fixtures/keycloak.go
+#  Derived from service/cmd/keycloak_data.yaml @ service/v0.25.1, with:
+#    * every "secret" replaced by a per-deployment random value (placeholders here)
+#    * the audience mapper pointed at https://platform.lab.example (was http://localhost:8080)
+#    * `copies: 10` removed - upstream creates opentdf-1..10 and sample-user-1..10
+#      for load tests; a lab does not want 20 extra principals
+#    * sample-user replaced by user-a (entitled) and user-b (not entitled)
+#    * cli given directAccessGrantsEnabled so a user token can be
+#      obtained headlessly with the OAuth password grant (no OS keyring needed)
+#    * web-console (the browser console) and wrapper (the self-decrypting HTML
+#      page) added as public clients. In the original lab web-console was
+#      created later through the Admin API; it is folded in here so a fresh
+#      provision creates it.
+#
+#  !!! ONCE FILLED IN, CONTAINS CLEARTEXT SECRETS AND PASSWORDS. chmod 600.    !!!
+#  !!! The same values live in .env - they MUST match.                         !!!
+#  !!! `provision keycloak` does NO variable substitution, which is why these  !!!
+#  !!! cannot be referenced out to .env.                                       !!!
+#
+#  !!! CREATE-ONLY, NOT CONVERGENT !!!
+#  `provision keycloak` skips objects that already exist (Keycloak 409s and the
+#  fixture code treats that as success) and NEVER updates a client secret, a
+#  protocol mapper, a service-account role, or a user password. It still exits 0.
+#  Editing this file against a realm that already exists therefore changes
+#  NOTHING, silently.
+#
+#  Making a change real requires destroying the state:
+#     docker compose down -v && docker compose up -d
+#  (that drops lab_pgdata - the Keycloak database AND the platform's policy
+#  database; the README's "Seed the policy" step has to be re-run afterwards.)
+#
+#  Always check the realm after `up` - at minimum a real client-credentials
+#  grant against the entity-resolution client and a look at its token's `aud`
+#  and roles - so a stale realm fails loudly instead of surfacing later as an
+#  unexplained authorization error.
+# =============================================================================
+
+# The platform verifies that this exact value appears in the token's `aud`.
+# It must equal server.auth.audience in opentdf.yaml.
+customAudMapper: &customAudMapper
+  name: audience-mapper
+  protocol: openid-connect
+  protocolMapper: oidc-audience-mapper
+  config:
+    included.custom.audience: "https://platform.lab.example"
+    access.token.claim: "true"
+    id.token.claim: "true"
+
+realms:
+  - realm_repepresentation:      # [sic] - the upstream key really is misspelled
+      realm: lab-realm
+      enabled: true
+
+    custom_realm_roles:
+      # Consumed by opentdf.yaml server.auth.policy.extension, which maps
+      # these onto casbin role:admin / role:standard.
+      - name: opentdf-admin
+      - name: opentdf-standard
+
+    clients:
+      # --- admin service account: what otdfctl uses for policy management ----
+      - client:
+          clientID: platform-admin
+          enabled: true
+          name: platform-admin
+          serviceAccountsEnabled: true
+          standardFlowEnabled: false
+          directAccessGrantsEnabled: false
+          publicClient: false
+          clientAuthenticatorType: client-secret
+          secret: CHANGE_ME_CLIENT_SECRET
+          protocolMappers:
+            - *customAudMapper
+        sa_realm_roles:
+          - opentdf-admin
+
+      # --- standard (non-admin) service account, for SDK experiments --------
+      - client:
+          clientID: platform-sdk
+          enabled: true
+          name: platform-sdk
+          serviceAccountsEnabled: true
+          standardFlowEnabled: false
+          directAccessGrantsEnabled: false
+          publicClient: false
+          clientAuthenticatorType: client-secret
+          secret: CHANGE_ME_CLIENT_SECRET
+          protocolMappers:
+            - *customAudMapper
+        sa_realm_roles:
+          - opentdf-standard
+
+      # --- DPoP-bound variant. Unused in phase 1 (dpop.enforce is false),
+      # --- kept so DPoP can be switched on without re-provisioning.
+      - client:
+          clientID: platform-dpop
+          enabled: true
+          name: platform-dpop
+          serviceAccountsEnabled: true
+          standardFlowEnabled: false
+          directAccessGrantsEnabled: false
+          publicClient: false
+          clientAuthenticatorType: client-secret
+          secret: CHANGE_ME_CLIENT_SECRET
+          attributes:
+            dpop.bound.access.tokens: "true"
+          protocolMappers:
+            - *customAudMapper
+        sa_realm_roles:
+          - opentdf-admin
+
+      # --- the self-decrypting HTML wrapper (see README.md). PUBLIC, and the
+      # --- ONLY grant it has is the device authorization grant: no standard
+      # --- flow, no direct access grants, no service account, and NO redirect
+      # --- URIs at all. That is the point - a wrapper opened from a filesystem
+      # --- has the origin `null` and can never have a redirect registered for
+      # --- it, so the device grant is the one flow it can use. webOrigins is
+      # --- the literal string "null" so the realm returns
+      # --- `Access-Control-Allow-Origin: null` and a file:// page can READ the
+      # --- device and token responses. Verified from a real file:// page.
+      - client:
+          clientID: wrapper
+          enabled: true
+          name: TDF Lab Sealed Page
+          publicClient: true
+          serviceAccountsEnabled: false
+          standardFlowEnabled: false
+          implicitFlowEnabled: false
+          directAccessGrantsEnabled: false
+          redirectUris: []
+          webOrigins:
+            - "null"
+          attributes:
+            oauth2.device.authorization.grant.enabled: "true"
+          protocolMappers:
+            - *customAudMapper
+
+      # --- used BY the platform's Entity Resolution Service to read users
+      # --- out of the Keycloak admin API. Its secret is the one injected as
+      # --- OPENTDF_SERVICES_ENTITYRESOLUTION_CLIENTSECRET.
+      - client:
+          clientID: entity-resolution
+          enabled: true
+          name: entity-resolution
+          serviceAccountsEnabled: true
+          standardFlowEnabled: false
+          directAccessGrantsEnabled: false
+          publicClient: false
+          clientAuthenticatorType: client-secret
+          secret: CHANGE_ME_CLIENT_SECRET
+          protocolMappers:
+            - *customAudMapper
+        sa_client_roles:
+          realm-management:
+            - view-clients
+            - query-clients
+            - view-users
+            - query-users
+
+      # --- used BY the platform's authorization service ----------------------
+      - client:
+          clientID: authorization-svc
+          enabled: true
+          name: authorization-svc
+          serviceAccountsEnabled: true
+          standardFlowEnabled: false
+          directAccessGrantsEnabled: false
+          publicClient: false
+          clientAuthenticatorType: client-secret
+          secret: CHANGE_ME_CLIENT_SECRET
+          protocolMappers:
+            - *customAudMapper
+
+      # --- public client for HUMAN logins (user-a / user-b) ----------------------
+      # standardFlow      -> `otdfctl auth login --client-id cli` (browser)
+      # directAccessGrants-> the headless password grant used in the README's
+      #                      ALLOW/DENY loop. Acceptable for a lab; it is the
+      #                      only way to get a *user* token without a browser.
+      - client:
+          clientID: cli
+          enabled: true
+          name: cli
+          publicClient: true
+          serviceAccountsEnabled: false
+          standardFlowEnabled: true
+          directAccessGrantsEnabled: true
+          redirectUris:
+            - 'http://localhost:*'
+          protocolMappers:
+            - *customAudMapper
+
+      # --- the browser console (authorization code + PKCE, PUBLIC) ----------
+      # No secret exists: the browser proves possession of a PKCE verifier.
+      # EXACT redirect URI (no `/*` wildcard, per RFC 9700) and an exact web
+      # origin (not "+" and not "*").
+      - client:
+          clientID: web-console
+          enabled: true
+          name: TDF Lab Console
+          protocol: openid-connect
+          publicClient: true
+          standardFlowEnabled: true
+          implicitFlowEnabled: false
+          directAccessGrantsEnabled: false
+          serviceAccountsEnabled: false
+          rootUrl: 'https://tdf.lab.example'
+          baseUrl: '/'
+          redirectUris:
+            - 'https://tdf.lab.example/'
+          webOrigins:
+            - 'https://tdf.lab.example'
+          attributes:
+            pkce.code.challenge.method: "S256"
+            post.logout.redirect.uris: "https://tdf.lab.example/"
+          protocolMappers:
+            - *customAudMapper
+
+    users:
+      # ---------------------------------------------------------------------
+      # user-a - ENTITLED. Its `classification: secret` attribute is what the
+      # README's subject condition set selects on, via the selector
+      #     .attributes.classification[]
+      # (that is how the Keycloak ERS shapes a user representation - see the
+      # upstream policy_fixtures.yaml, which uses .attributes.superhero_name[]).
+      # ---------------------------------------------------------------------
+      - username: user-a
+        enabled: true
+        emailVerified: true
+        firstName: User A
+        lastName: Entitled
+        email: user-a@lab.example
+        credentials:
+          - type: password
+            value: CHANGE_ME_USER_PASSWORD
+            temporary: false
+        attributes:
+          classification:
+            - secret
+        realmRoles:
+          - opentdf-standard
+
+      # ---------------------------------------------------------------------
+      # user-b - NOT entitled. Same role, same everything, ONE attribute value
+      # different. That single difference is the whole point of the lab: the
+      # DENY must come from policy, not from a missing role or a broken login.
+      # ---------------------------------------------------------------------
+      - username: user-b
+        enabled: true
+        emailVerified: true
+        firstName: User B
+        lastName: Unentitled
+        email: user-b@lab.example
+        credentials:
+          - type: password
+            value: CHANGE_ME_USER_PASSWORD
+            temporary: false
+        attributes:
+          classification:
+            - public
+        realmRoles:
+          - opentdf-standard
