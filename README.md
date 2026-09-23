@@ -308,4 +308,4 @@ services, and no backup, monitoring, or key-rotation story. Versions are
 pinned to what the lab ran in 2026-08 and 2026-09 and will age. Use it to
 learn how TDF-style access control behaves, not to protect real data.
 
-License: TBD (pending author decision)
+License: MIT. See [LICENSE](LICENSE).
