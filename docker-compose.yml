@@ -434,8 +434,9 @@ services:
       - ./webapp/public:/srv/tdf-lab/records:ro
       # Optional: self-decrypting wrappers to serve under /sealed/.
       # - ./sealed:/srv/tdf-lab/sealed:ro
+    # nginx-unprivileged:alpine ships curl; the image listens on 8080.
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/healthz"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3

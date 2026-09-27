@@ -1,5 +1,7 @@
-node_modules
+**/node_modules
 Dockerfile
 .dockerignore
-*.env
-.env*
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
