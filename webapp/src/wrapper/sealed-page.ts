@@ -28,6 +28,7 @@
  * Neither is hidden from the reader. Both are on the page, in a box.
  */
 
+import { CONFIG_ERROR, OIDC_AUTHORITY, PLATFORM_URL } from '../config';
 import { createClients, decryptTdf, type DecryptOutcome } from '../tdf';
 import { fetchPolicy } from '../policy';
 import { openTdfFile, policyAttributes, formatBytes, type TdfFile } from '../manifest';
@@ -270,6 +271,28 @@ function boot(): void {
           'None of it is the data. The payload above is ciphertext: holding this file gives you ' +
           'every word of the policy and not one word of the document.',
       ),
+    );
+
+    // The lab this wrapper belongs to travels in its metadata (config.ts).
+    // Without a valid one there is nowhere to authenticate or rewrap, so say
+    // so instead of offering a button that calls placeholder hosts.
+    if (CONFIG_ERROR) {
+      const p = panel('Open it here', null);
+      app.appendChild(p.root);
+      p.body.appendChild(
+        el(
+          'p',
+          'notice notice--deny',
+          `This wrapper does not say which lab it belongs to (${CONFIG_ERROR}), so it cannot sign you in or ask a key server for the key. Open the .tdf in the lab console instead.`,
+        ),
+      );
+      return;
+    }
+    facts.body.appendChild(
+      kv([
+        ['platform', PLATFORM_URL],
+        ['realm', OIDC_AUTHORITY],
+      ]),
     );
 
     buildOpener(app, tdf, attrs, { filename, localDoc, atLab });

@@ -1,5 +1,5 @@
 import { signIn } from '../auth';
-import { APP_ORIGIN, ATTRIBUTE_NAMESPACE, OIDC_AUTHORITY, PLATFORM_URL } from '../config';
+import { ATTRIBUTE_NAMESPACE, OIDC_AUTHORITY, PLATFORM_URL } from '../config';
 
 /**
  * Signed-out screen. The thesis of the lab is the comparison, so the hero is
@@ -9,7 +9,7 @@ export function Gate({ error }: { error: string | null }) {
   return (
     <div className="gate">
       <div className="gate__inner">
-        <p className="eyebrow">OpenTDF learning lab · {new URL(APP_ORIGIN).host}</p>
+        <p className="eyebrow">OpenTDF learning lab · {window.location.host}</p>
         <h1 className="thesis">
           One file.
           <br />

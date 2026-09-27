@@ -54,5 +54,10 @@ writeFileSync(OUT, page, 'utf8');
 
 const inline = /<script>([\s\S]*?)<\/script>/.exec(page)[1];
 const sha = createHash('sha256').update(inline, 'utf8').digest('base64');
+// The web image reads this file at build time and pins it into the /sealed/
+// CSP (web/entrypoint.sh). The runtime carries no deployment hostname (they
+// travel in each wrapper's metadata), so the hash is a property of the build
+// alone and is the same for every deployment of that build.
+writeFileSync('src/wrapper/generated/sealed-script.sha256', `sha256-${sha}\n`, 'utf8');
 console.log(`wrapper template: ${OUT}  (${(page.length / 1024).toFixed(0)} KB)`);
 console.log(`CSP hash for nginx location /sealed/:  'sha256-${sha}'`);

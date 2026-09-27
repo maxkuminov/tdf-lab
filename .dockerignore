@@ -1,0 +1,20 @@
+# Build contexts must never carry secrets or local state into an image layer.
+.git
+.env
+.env.*
+keycloak_data.yaml
+keycloak_data.yaml.*
+keys/
+backups/
+scratch-fixtures/
+**/*.pem
+**/*.key
+**/*.tdf
+**/*.tdf.html
+**/*.sqlite
+**/records.json
+**/config.js
+**/node_modules
+**/dist
+webapp/src/wrapper/generated/
+webapp/e2e/out/

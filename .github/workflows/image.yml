@@ -1,0 +1,142 @@
+# Build -> smoke test -> Trivy gate -> push to GHCR, for the lab's two
+# self-built images:
+#
+#   ghcr.io/maxkuminov/tdf-lab-web        web/Dockerfile (context: repo root)
+#   ghcr.io/maxkuminov/tdf-lab-share-api  shareapi/Dockerfile (context: shareapi/)
+#
+# Pull requests build, smoke-test and scan but never push. Pushes to main
+# publish sha-<short> and latest; a v* tag publishes the tag name and
+# sha-<short>. Deployments should pin the digest printed in the job summary.
+name: image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Trivy runs from its container image pinned by digest (not trivy-action).
+  TRIVY_IMAGE: aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c
+
+jobs:
+  build-scan-push:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: tdf-lab-web
+            context: .
+            dockerfile: web/Dockerfile
+          - name: tdf-lab-share-api
+            context: shareapi
+            dockerfile: shareapi/Dockerfile
+    env:
+      IMAGE: ghcr.io/maxkuminov/${{ matrix.name }}
+      LOCAL: ${{ matrix.name }}:ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            -f "${{ matrix.dockerfile }}" -t "$LOCAL" "${{ matrix.context }}"
+
+      # The deployment contract, exercised: read-only root FS, only /tmp
+      # writable, no capabilities, the image's own non-root uid.
+      - name: Smoke test (read-only, non-root)
+        run: |
+          set -euo pipefail
+          ro=(--read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges)
+          if [ "${{ matrix.name }}" = tdf-lab-web ]; then
+            # No share API here: point the /api/ upstream at loopback so nginx
+            # has a resolvable name; the smoke test never calls /api/.
+            docker run -d --name web -p 127.0.0.1:8080:8080 "${ro[@]}" \
+              -e TDF_PLATFORM_URL=https://platform.ci.example \
+              -e TDF_KEYCLOAK_URL=https://keycloak.ci.example \
+              -e TDF_SHARE_API_UPSTREAM=127.0.0.1:3000 \
+              "$LOCAL"
+            sleep 3
+            docker logs web
+            test "$(docker exec web id -u)" = 101
+            curl -fsS http://127.0.0.1:8080/healthz
+            curl -fsS http://127.0.0.1:8080/ | grep -q '<script src="/config.js">'
+            curl -fsS http://127.0.0.1:8080/config.js | grep -q "platformUrl: 'https://platform.ci.example'"
+            curl -fsSI http://127.0.0.1:8080/ \
+              | grep -qi "content-security-policy: .*connect-src 'self' https://platform.ci.example https://keycloak.ci.example;"
+            # A malformed value must stop the container, not reach the page.
+            if docker run --rm "${ro[@]}" \
+                 -e "TDF_PLATFORM_URL=https://x.example';alert(1)//" \
+                 -e TDF_KEYCLOAK_URL=https://keycloak.ci.example "$LOCAL"; then
+              echo "entrypoint accepted a malformed TDF_PLATFORM_URL" >&2; exit 1
+            fi
+          else
+            docker volume create smoke-data
+            docker run -d --name api "${ro[@]}" -v smoke-data:/data \
+              -e OIDC_ISSUER=https://keycloak.ci.example/realms/lab-realm \
+              -e OIDC_AUDIENCE=https://platform.ci.example \
+              "$LOCAL"
+            sleep 3
+            docker logs api
+            test "$(docker exec api id -u)" = 10001
+            docker exec api node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>r.json()).then(j=>{console.log(j);process.exit(j.status==='ok'?0:1)})"
+          fi
+
+      # Same gate as the homelab's docker-build-scan.sh: HIGH,CRITICAL with an
+      # available fix fails the job; .trivyignore is honoured when present.
+      - name: Trivy scan (HIGH/CRITICAL, ignore-unfixed)
+        run: |
+          set -euo pipefail
+          ignore=()
+          if [ -f .trivyignore ]; then ignore=(--ignorefile /src/.trivyignore); fi
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock:ro \
+            -v "$PWD:/src:ro" \
+            "$TRIVY_IMAGE" image \
+              --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed \
+              --no-progress --scanners vuln --pkg-types os,library \
+              "${ignore[@]}" \
+              "$LOCAL"
+
+      - name: Push to GHCR
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          tags=("sha-${SHORT_SHA}")
+          if [ "$GITHUB_REF" = refs/heads/main ]; then tags+=(latest); fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then tags+=("$GITHUB_REF_NAME"); fi
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for tag in "${tags[@]}"; do
+            docker tag "$LOCAL" "${IMAGE}:${tag}"
+            docker push "${IMAGE}:${tag}"
+          done
+          digest=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${IMAGE}:sha-${SHORT_SHA}" \
+                   | grep -m1 "^${IMAGE}@sha256:" | cut -d@ -f2)
+          test -n "$digest"
+          {
+            echo "### ${{ matrix.name }}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| tags | \`${tags[*]}\` |"
+            echo "| digest | \`${digest}\` |"
+            echo
+            echo "Pin as \`${IMAGE}:sha-${SHORT_SHA}@${digest}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          docker logout ghcr.io

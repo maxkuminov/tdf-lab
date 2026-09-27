@@ -13,8 +13,22 @@ import { createRemoteJWKSet, jwtVerify, errors as joseErrors } from 'jose';
  * is byte-identical to the one the platform verifies.
  */
 
-const ISSUER = process.env.OIDC_ISSUER ?? 'https://keycloak.lab.example/realms/lab-realm';
-const AUDIENCE = process.env.OIDC_AUDIENCE ?? 'https://platform.lab.example';
+/**
+ * The deployment's issuer and audience come from the environment only. There
+ * is deliberately no default: a pod that silently fell back to a placeholder
+ * issuer would start, pass its health check, and reject every real token.
+ * Refusing to start makes the misconfiguration visible where it is made.
+ */
+function required(name) {
+  const v = process.env[name];
+  if (!v || !/^https:\/\/\S+$/.test(v)) {
+    console.error(`share-api: ${name} must be set to an https:// URL`);
+    process.exit(64);
+  }
+  return v;
+}
+const ISSUER = required('OIDC_ISSUER');
+const AUDIENCE = required('OIDC_AUDIENCE');
 const JWKS_URL = process.env.OIDC_JWKS_URL ?? `${ISSUER}/protocol/openid-connect/certs`;
 
 /**

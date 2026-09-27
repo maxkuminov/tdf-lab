@@ -1,7 +1,14 @@
 # =============================================================================
 #  tdf-console: static host for the TDF Lab Console SPA
-#  nginx.conf (repo root)
-#  Mounted read-only at /etc/nginx/conf.d/default.conf (replacing the stock one)
+#  web/default.conf.template - an envsubst TEMPLATE, not a config file.
+#
+#  web/entrypoint.sh validates the TDF_* environment variables, renders this
+#  file to /tmp/tdf-lab/default.conf (the only writable path in the image) and
+#  web/nginx.conf includes it from there. Only the ${TDF_*} names listed in the
+#  entrypoint are substituted; nginx's own $variables pass through untouched.
+#  Every substituted value has been checked against a strict pattern first
+#  (an origin is exactly https://host[:port]), so none can carry a quote, a
+#  space, a semicolon or a newline into a directive or a CSP.
 #
 #  TLS, HSTS, X-Content-Type-Options, Referrer-Policy and the rate limit all
 #  come from the reverse proxy (see the Traefik labels in docker-compose.yml).
@@ -24,7 +31,7 @@
 # =============================================================================
 
 map $host $csp {
-    default "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://platform.lab.example https://keycloak.lab.example; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https://keycloak.lab.example";
+    default "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' ${TDF_PLATFORM_URL} ${TDF_KEYCLOAK_URL}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' ${TDF_KEYCLOAK_URL}";
 }
 
 # -----------------------------------------------------------------------------
@@ -35,9 +42,11 @@ map $host $csp {
 #  single inline <script>. This path, and only this path, permits an inline
 #  script, and permits exactly ONE, by SHA-256.
 #
-#  The hash below is a PLACEHOLDER. It depends on the built runtime, which
-#  embeds the hostnames from webapp/src/config.ts, so it cannot be published
-#  pre-computed: build the wrapper with your own config and paste its hash.
+#  The hash is computed by `npm run build:wrapper` inside the image build
+#  (webapp/scripts/build-wrapper-template.mjs writes it next to the generated
+#  page) and baked into the image; the entrypoint substitutes it here. The
+#  runtime carries no hostname - each wrapper's metadata does - so the hash
+#  depends on the build alone, never on the deployment.
 #
 #  The hash is stable for a given build. Everything file-specific (the sealed
 #  .tdf, the filename) travels as base64 in a hidden input and is decoded at
@@ -63,12 +72,13 @@ map $host $csp {
 #  !! generated page, and fails if they have drifted.
 # -----------------------------------------------------------------------------
 map $host $csp_sealed {
-    default "default-src 'none'; script-src 'sha256-CHANGE_ME_run_npm_run_build_wrapper_and_paste_the_hash'; style-src 'unsafe-inline'; img-src data:; connect-src https://platform.lab.example https://keycloak.lab.example; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
+    default "default-src 'none'; script-src '${TDF_SEALED_SCRIPT_HASH}'; style-src 'unsafe-inline'; img-src data:; connect-src ${TDF_PLATFORM_URL} ${TDF_KEYCLOAK_URL}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
 }
 
 server {
-    listen       80;
-    listen       [::]:80;
+    # Unprivileged port: the image runs as uid 101 and cannot bind below 1024.
+    listen       8080;
+    listen       [::]:8080;
     server_name  _;
 
     root         /usr/share/nginx/html;
@@ -103,6 +113,34 @@ server {
         add_header Cache-Control "no-store" always;
     }
 
+    # Runtime configuration for the SPA (platform + Keycloak URLs, client ids),
+    # rendered by the entrypoint from validated env vars. Never cached: it is
+    # what changes between deployments of the same image.
+    location = /config.js {
+        root /tmp/tdf-lab;
+        default_type application/javascript;
+        add_header Content-Security-Policy $csp always;
+        add_header Cache-Control "no-store" always;
+        try_files /config.js =404;
+    }
+
+    # The Database panel's sealed table, exported by dbdemo/dbdemo.py. Served
+    # from an OPTIONAL mount (a ConfigMap on Kubernetes, ./webapp/public under
+    # Compose) so a re-export needs no image rebuild; falls back to a copy
+    # baked into the bundle, else 404 (the panel then says there is no table).
+    # Public on purpose: every cell is ciphertext.
+    location = /records.json {
+        root /srv/tdf-lab/records;
+        add_header Content-Security-Policy $csp always;
+        add_header Cache-Control "no-cache" always;
+        try_files /records.json @records_bundled;
+    }
+    location @records_bundled {
+        add_header Content-Security-Policy $csp always;
+        add_header Cache-Control "no-cache" always;
+        try_files /records.json =404;
+    }
+
     # ---------------------------------------------------------------------
     # Same-origin proxy to the share API.
     #
@@ -130,7 +168,7 @@ server {
         # add_header does not inherit into a location that sets its own, and
         # this block sets none - so the server-level CSP applies unchanged.
         # Repeat it anyway if you ever add one here.
-        proxy_pass http://tdf-share-api:3000/;
+        proxy_pass http://${TDF_SHARE_API_UPSTREAM}/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -152,7 +190,10 @@ server {
     # self-contained - there is no companion runtime file any more - so this
     # location serves nothing but those pages. `vite build` empties dist/, so
     # anything dropped in here is a demonstration copy, not storage.
+    # Served from an OPTIONAL mount at /srv/tdf-lab/sealed/ (read-only root FS:
+    # nothing can be dropped into the image itself).
     location /sealed/ {
+        root /srv/tdf-lab;
         add_header Content-Security-Policy $csp_sealed always;
         add_header Cache-Control "no-cache" always;
         add_header X-Content-Type-Options "nosniff" always;

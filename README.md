@@ -37,7 +37,7 @@ decrypt itself away from any web application.
 | Component | Where | What it shows |
 |---|---|---|
 | Platform stack | `docker-compose.yml`, `opentdf.yaml`, `keycloak_data.example.yaml`, `postgres-init/` | OpenTDF platform v0.25.1 in `mode: all` (policy, authorization, KAS, entity resolution), Keycloak, PostgreSQL, on an internal Docker network with no gateway. One attribute (`classification`, values `secret` and `public`) and two demo users who differ only in that attribute. |
-| Web console | `webapp/`, `nginx.conf` | A React SPA that signs in with authorization code + PKCE, encrypts a file to an attribute in the browser, and shows the rewrap being allowed or denied. It draws a live protocol sequence diagram, dissects the manifest field by field, and distinguishes four refusals: policy denial, policy-binding mismatch (tamper), payload integrity failure, and token rejection. |
+| Web console | `webapp/`, `web/` | A React SPA that signs in with authorization code + PKCE, encrypts a file to an attribute in the browser, and shows the rewrap being allowed or denied. It draws a live protocol sequence diagram, dissects the manifest field by field, and distinguishes four refusals: policy denial, policy-binding mismatch (tamper), payload integrity failure, and token rejection. |
 | Share API and Library | `shareapi/` (Express 5 + jose), Library panel in the console | The untrusted half of the lab. It stores sealed `.tdf` files and metadata, validates that uploads are well-formed TDFs, and never sees plaintext, a data key, or a password. Anyone signed in can fetch any file. Only the KAS decides who can read one. |
 | Self-decrypting HTML wrapper | `webapp/src/wrapper/` | Any sealed file can be exported as one self-contained `.html` page carrying the ciphertext, the manifest, and a reader with the OpenTDF SDK inlined. The intended flow from disk signs in with the OAuth 2.0 Device Authorization Grant (RFC 8628, no redirect URI needed) and asks the KAS to rewrap. The pieces were tested separately; the full approval-to-plaintext chain remains unverified. The page states its two costs to the reader (see "Design trade-offs"). |
 | Field-level encrypted SQLite | `dbdemo/dbdemo.py`, Database panel in the console | An `employees` table whose sensitive columns exist only as ZTDF ciphertexts, one TDF per cell, sealed under each row's classification. Plain columns stay queryable. Each protected cell costs one KAS rewrap to read, and an unentitled user gets a policy denial from the KAS, not a client-side check. All data is fictional. |
@@ -90,9 +90,10 @@ These are choices a lab can make and a production system should examine.
 - **The `cli` client allows the OAuth password grant.** It is the mechanism used here to get a *user* token for scripted allow/deny checks. Acceptable for a
   lab with demo accounts; not something to copy.
 - **The CSP for `/sealed/` pins one inline script by SHA-256.** A wrapper loads
-  nothing else, so the single hash is the whole script policy. The hash depends
-  on the built runtime, which embeds your hostnames, so `nginx.conf` ships a
-  placeholder (see step 5 below).
+  nothing else, so the single hash is the whole script policy. The runtime
+  carries no hostname (each wrapper's metadata names its lab), so the hash is
+  a property of the build alone: the web image computes it while building and
+  pins it for you.
 
 ## Running it
 
@@ -112,7 +113,9 @@ users' tokens, so the stack assumes:
   the command-line demos.
 
 Replace `*.lab.example` everywhere with your own names: `.env`,
-`opentdf.yaml`, `keycloak_data.yaml`, `nginx.conf`, `webapp/src/config.ts`.
+`opentdf.yaml`, `keycloak_data.yaml`. The console and the share API take
+theirs from `.env` at container start (see "Container images"); nothing is
+compiled in.
 The policy namespace `lab.example` (in attribute FQNs such as
 `https://lab.example/attr/classification/value/secret`) is an identifier inside
 the policy model, not a host, and does not need to resolve.
@@ -153,23 +156,22 @@ docker network inspect lab-net   # expect no Gateway in the IPAM config
 
 Then attach your reverse proxy to `lab-net` with the two aliases.
 
-**4. Dependencies, built in throwaway containers.**
+**4. The console and share-API images.** Either pull the published ones or
+build them from this checkout; no node is needed on the host either way.
 
 ```sh
-(cd shareapi && docker run --rm -v "$PWD":/app -w /app -u "$(id -u):$(id -g)" \
-   -e HOME=/tmp node:24-alpine sh -c 'npm ci')
-(cd webapp && docker run --rm -v "$PWD":/app -w /app -u "$(id -u):$(id -g)" \
-   -e HOME=/tmp node:24-alpine sh -c 'npm ci && npm run build')
+docker compose pull tdf-console tdf-share-api    # ghcr.io/maxkuminov/tdf-lab-*
+# or
+docker compose build tdf-console tdf-share-api   # from web/ and shareapi/
 ```
 
-The share API's data volume is created root-owned; chown it to `1000:1000`
-(the uid the service runs as) after the first `up`, for example with a one-off
-`docker run --rm -v lab_sharedata:/data alpine chown 1000:1000 /data`.
+A fresh `lab_sharedata` volume takes its ownership from the image (uid
+10001). One created by an earlier version of this kit (uid 1000) needs a
+one-off `docker run --rm -v lab_sharedata:/data alpine chown -R 10001:10001 /data`.
 
-**5. Pin the wrapper CSP.** `npm run build:wrapper` prints the SHA-256 of the
-wrapper's inline script. Paste it over the `CHANGE_ME` placeholder in the
-`$csp_sealed` map in `nginx.conf`. Rebuild and re-paste whenever the wrapper
-runtime, template, or `config.ts` changes.
+**5. The wrapper CSP needs nothing.** The `/sealed/` script hash is computed
+while the web image is built and substituted at start; there is no hash to
+paste.
 
 **6. Bring it up.**
 
@@ -255,13 +257,91 @@ python3 dbdemo/dbdemo.py export        # writes webapp/public/records.json
 `records.json` and `records.sqlite` are generated and gitignored. Until you
 run `export`, the Database panel has nothing to load.
 
+## Container images
+
+Two images are built from this repo by `.github/workflows/image.yml` (Trivy
+gated: any HIGH/CRITICAL with a fix fails the build) and published to GHCR
+with `sha-<commit>` tags, `latest` from `main`, and the tag name for `v*`
+tags. Pin by digest for anything you keep. Neither image contains a secret,
+a hostname or any deployment-specific value.
+
+### `ghcr.io/maxkuminov/tdf-lab-web`
+
+The console SPA plus the same-origin `/api/` proxy to the share API
+(`web/Dockerfile`, nginx-unprivileged). Listens on **8080** as **uid 101**,
+and runs with a **read-only root filesystem**: only `/tmp` must be writable
+(a tmpfs / `emptyDir`). At start, `web/entrypoint.sh` validates its
+environment, renders `/config.js` (read by the SPA before it boots) and the
+nginx server block (CSP `connect-src`/`form-action`, `/api/` upstream) into
+`/tmp`, and refuses to start on any malformed value.
+
+| Variable | Required | Default | Shape |
+|---|---|---|---|
+| `TDF_PLATFORM_URL` | yes | | `https://host[:port]` |
+| `TDF_KEYCLOAK_URL` | yes | | `https://host[:port]` (Keycloak at its root path) |
+| `TDF_KEYCLOAK_REALM` | | `lab-realm` | `[A-Za-z0-9._-]{1,64}` |
+| `TDF_OIDC_CLIENT_ID` | | `web-console` | same |
+| `TDF_OIDC_WRAPPER_CLIENT_ID` | | `wrapper` | same |
+| `TDF_ATTRIBUTE_NAMESPACE` | | `https://lab.example` | `https://host[:port]` |
+| `TDF_SHARE_API_UPSTREAM` | | `tdf-share-api:3000` | `host:port`, resolvable when nginx starts |
+
+The KAS URL is `$TDF_PLATFORM_URL/kas` and must match the KAS registry entry
+exactly.
+
+Optional read-only mounts:
+
+- `/srv/tdf-lab/records/records.json`: the Database panel's sealed table
+  (`python3 dbdemo/dbdemo.py export` writes it to `webapp/public/`, which the
+  Compose file mounts here). It is about 36 KB, so on Kubernetes a ConfigMap
+  with the key `records.json` mounted at `/srv/tdf-lab/records` is enough.
+  Without it `/records.json` is 404 and the panel says there is no table.
+- `/srv/tdf-lab/sealed/`: self-decrypting wrappers to serve under `/sealed/`.
+
+Probes: `GET /healthz` on 8080 (unauthenticated, unlogged).
+
+### `ghcr.io/maxkuminov/tdf-lab-share-api`
+
+The ciphertext-only store (`shareapi/Dockerfile`, node 24 alpine, production
+dependencies only, npm removed). Listens on **3000** as **uid 10001** with a
+**read-only root filesystem** (`HOME=/tmp`; mount a tmpfs / `emptyDir` at
+`/tmp`). `DATA_DIR` (default `/data`) is the only thing it writes and must be
+a persistent volume writable by uid 10001 (on Kubernetes, `fsGroup: 10001`).
+
+| Variable | Required | Default |
+|---|---|---|
+| `OIDC_ISSUER` | yes | (must equal the tokens' `iss`, e.g. `https://keycloak.lab.example/realms/lab-realm`) |
+| `OIDC_AUDIENCE` | yes | (the platform URL the audience mapper injects) |
+| `OIDC_JWKS_URL` | | `$OIDC_ISSUER/protocol/openid-connect/certs` |
+| `ALLOWED_AZP` | | `web-console,cli` |
+| `DATA_DIR` | | `/data` |
+| `PORT` | | `3000` |
+| `MAX_FILE_BYTES` / `MAX_FILES_PER_USER` / `MAX_BYTES_PER_USER` | | 20 MiB / 50 / 200 MiB |
+
+Probes: `GET /healthz` on 3000. It returns a file count, so expose the service
+only to the web pod; the web image already answers `/api/healthz` with 404.
+
+### Kubernetes notes
+
+Both images are meant for `runAsNonRoot: true`, `readOnlyRootFilesystem: true`,
+`allowPrivilegeEscalation: false` and `capabilities: {drop: [ALL]}`, with an
+`emptyDir` at `/tmp`. Point `TDF_SHARE_API_UPSTREAM` at the share API's
+Service. Run one share-API replica: its index is a single JSON file on the
+volume. The platform, Keycloak and PostgreSQL stay on their upstream images.
+
+### Local development
+
+`npm run dev` in `webapp/` needs a config: copy `webapp/config.example.js` to
+`webapp/public/config.js` (gitignored) and set your hostnames.
+
 ### Verification harnesses
 
 `webapp/e2e/` holds three checks that were run against the lab and are kept
 for reference rather than as a turnkey suite:
 
 - `e2e.ts` (`npm run verify:headless`) drives the same source modules the SPA
-  ships, from Node, with `USER_A_TOKEN` / `USER_B_TOKEN` in the environment. It
+  ships, from Node, with `USER_A_TOKEN` / `USER_B_TOKEN` in the environment
+  (and the deployment in `TDF_PLATFORM_URL`, `TDF_KEYCLOAK_URL`,
+  `TDF_APP_ORIGIN` etc.; see `e2e/config-shim.ts`). It
   also reads several `/tmp/*.tdf` fixtures (tampered, truncated, structurally
   fake, a plain zip) produced by a fixture generator that is **not** included
   in this repo; those checks fail until you supply equivalent files.
@@ -276,13 +356,14 @@ docker-compose.yml           the stack (Traefik labels; needs an external revers
 .env.example                 hostnames, image pins, and CHANGE_ME secrets
 opentdf.yaml                 platform config; secrets come from env, not this file
 keycloak_data.example.yaml   realm, roles, clients, demo users for `provision keycloak`
-nginx.conf                   console static host, /api/ same-origin proxy, /sealed/ CSP
+web/                         tdf-lab-web image: Dockerfile, nginx config template, entrypoint
+.github/workflows/image.yml  builds, smoke-tests, Trivy-gates and publishes both images
 postgres-init/               first-boot script: separate Keycloak role + database
 webapp/                      browser console (Vite + React + TypeScript, @opentdf/sdk 0.20.0)
   src/wrapper/               self-decrypting HTML wrapper: page, device grant, build template
   scripts/                   stage 2 of the wrapper build
   e2e/                       verification harnesses (see above)
-shareapi/                    ciphertext-only file store (Node, Express 5, jose)
+shareapi/                    ciphertext-only file store (Node, Express 5, jose) + its Dockerfile
 dbdemo/                      field-level encrypted SQLite demo (Python stdlib + otdfctl)
 docs/                        write-up (WHITEPAPER.md)
 ```

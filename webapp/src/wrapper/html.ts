@@ -31,7 +31,7 @@
 // `npm run build:wrapper` before every app build. Never edit it; edit
 // `page.template.html` and `sealed-page.ts`.
 import template from './generated/page.html?raw';
-import { APP_ORIGIN } from '../config';
+import { APP_ORIGIN, wrapperConfig } from '../config';
 
 /** Placeholders in `page.html`. Both sit inside a double-quoted attribute. */
 const TDF_SLOT = '__TDF_B64__';
@@ -143,10 +143,14 @@ export function buildSealedHtml(opts: SealedHtmlOptions): string {
   const tdfB64 = bytesToBase64(tdf);
   const metaB64 = utf8ToBase64(
     JSON.stringify({
-      v: 1,
+      v: 2,
       filename: displayName(opts.filename),
       origin,
       createdAt: (opts.now ?? new Date()).toISOString(),
+      // The deployment this wrapper talks to. Carried here, not compiled into
+      // the runtime, so the inline script (and its CSP hash) is identical for
+      // every deployment. Validated again by config.ts when the page boots.
+      cfg: wrapperConfig(),
     }),
   );
 
