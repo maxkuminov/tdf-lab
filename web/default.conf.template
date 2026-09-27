@@ -180,7 +180,10 @@ server {
         # API so it can answer 413 with a message, rather than nginx cutting
         # the connection with its own bare error page.
         client_max_body_size 25m;
-        proxy_request_buffering on;
+        # Stream the body to the API instead of spooling it to /tmp first: /tmp
+        # is a small tmpfs/emptyDir, and a buffered 17 MB upload would fill it
+        # before the API ever saw the request.
+        proxy_request_buffering off;
         proxy_read_timeout 60s;
     }
 
