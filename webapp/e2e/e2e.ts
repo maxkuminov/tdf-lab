@@ -1,5 +1,8 @@
 // Verification harness: exercises the SAME source modules the SPA ships,
 // against a running lab, from node. Not part of the app bundle.
+// config-shim MUST stay the first import: it supplies src/config.ts's runtime
+// configuration from TDF_* env vars before any module reads it.
+import './config-shim';
 import { createClients, encryptToTdf, decryptTdf } from '../src/tdf';
 import { fetchPolicy, allValues } from '../src/policy';
 import { openTdfFile, policyAttributes } from '../src/manifest';
@@ -248,11 +251,12 @@ async function main() {
   // origin, and only from a hardcoded same-origin absolute path.
   check('no src= or href= anywhere in the markup', String(/\s(src|href)\s*=/i.test(wrapped)), 'false');
   check('it references no companion runtime file', String(/sealed\/runtime\.js/.test(wrapped)), 'false');
-  check('the device grant client is baked in', String(wrapped.includes('wrapper')), 'true');
+  check('the runtime carries no deployment hostname', String(sealedRuntimeScript().includes(new URL(process.env.TDF_PLATFORM_URL ?? 'https://platform.lab.example').host)), 'false');
   check('no template placeholder survived substitution', String(wrapped.includes('__TDF_B64__') || wrapped.includes('__META_B64__')), 'false');
   const metaB64 = /id="meta-input" value="([^"]*)"/.exec(wrapped)?.[1] ?? '';
-  const meta = JSON.parse(Buffer.from(metaB64, 'base64').toString('utf8')) as { origin?: string; filename?: string };
-  check('the console origin is baked in as base64 metadata', String(meta.origin), 'https://tdf.lab.example');
+  const meta = JSON.parse(Buffer.from(metaB64, 'base64').toString('utf8')) as { origin?: string; filename?: string; cfg?: { wrapperClientId?: string } };
+  check('the console origin is baked in as base64 metadata', String(meta.origin), process.env.TDF_APP_ORIGIN ?? 'https://tdf.lab.example');
+  check('the device grant client travels in the metadata', String(meta.cfg?.wrapperClientId), process.env.TDF_OIDC_WRAPPER_CLIENT_ID ?? 'wrapper');
 
   console.log('--- W2: the embedded ciphertext round-trips through the normal path');
   const back = extractSealedTdf(new TextEncoder().encode(wrapped));

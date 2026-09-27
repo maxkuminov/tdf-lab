@@ -13,7 +13,7 @@ import { Identity } from './components/Identity';
 import { HowItWorks } from './components/HowItWorks';
 import { Library } from './components/Library';
 import { Records } from './components/Records';
-import { OIDC_AUTHORITY, PLATFORM_URL } from './config';
+import { OIDC_AUTHORITY, PLATFORM_URL, REALM } from './config';
 
 type View = 'library' | 'records' | 'encrypt' | 'decrypt' | 'policy' | 'identity' | 'how';
 
@@ -141,7 +141,7 @@ export function App() {
         </div>
         <div className="banner__status">
           <span className="status-dot status-dot--live">platform {hostOf(PLATFORM_URL)}</span>
-          <span className="status-dot status-dot--live">realm lab-realm</span>
+          <span className="status-dot status-dot--live">realm {REALM}</span>
           <span className="status-dot">{tdfFile ? tdfFile.name : 'no file loaded'}</span>
         </div>
         <div className="banner__who">

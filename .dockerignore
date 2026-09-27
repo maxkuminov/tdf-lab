@@ -1,0 +1,26 @@
+# Build contexts must never carry secrets or local state into an image layer
+# (not even a builder stage). Patterns are root-relative in Docker, so every
+# secret pattern is written with **/ to match at any depth.
+.git
+**/.env
+**/.env.*
+**/keycloak_data.yaml
+**/keycloak_data.yaml.*
+**/keys/
+**/backups/
+**/scratch-fixtures/
+**/*.pem
+**/*.key
+**/*.bak
+**/*.bak-*
+**/*.tdf
+**/*.tdf.html
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+**/records.json
+**/config.js
+**/node_modules
+**/dist
+webapp/src/wrapper/generated/
+webapp/e2e/out/

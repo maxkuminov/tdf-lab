@@ -3,3 +3,5 @@ dist/
 e2e/dist/
 e2e/out/
 src/wrapper/generated/
+public/config.js
+public/records.json
