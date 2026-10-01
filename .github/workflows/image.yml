@@ -46,6 +46,10 @@ jobs:
     env:
       IMAGE: ghcr.io/maxkuminov/${{ matrix.name }}
       LOCAL: ${{ matrix.name }}:ci
+    # Each leg sets only its own key, so both digests reach the flux-tag job.
+    outputs:
+      digest-tdf-lab-web: ${{ steps.push.outputs.digest-tdf-lab-web }}
+      digest-tdf-lab-share-api: ${{ steps.push.outputs.digest-tdf-lab-share-api }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
@@ -115,6 +119,7 @@ jobs:
               "$LOCAL"
 
       - name: Push to GHCR
+        id: push
         if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
@@ -129,6 +134,7 @@ jobs:
           digest=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${IMAGE}:sha-${SHORT_SHA}" \
                    | grep -m1 "^${IMAGE}@sha256:" | cut -d@ -f2)
           test -n "$digest"
+          echo "digest-${{ matrix.name }}=${digest}" >> "$GITHUB_OUTPUT"
           {
             echo "### ${{ matrix.name }}"
             echo
@@ -140,3 +146,73 @@ jobs:
             echo "Pin as \`${IMAGE}:sha-${SHORT_SHA}@${digest}\`"
           } >> "$GITHUB_STEP_SUMMARY"
           docker logout ghcr.io
+
+  # Flux image automation (maxkuminov/infra docs/homelab-image-automation.md,
+  # D1): both packages get the SAME immutable, sortable
+  # main-<shortsha>-<run_number> tag from this one run, and only after both
+  # matrix legs built, passed their scans and pushed (this job needs all of
+  # them). The tags are written last, back to back, by copying each leg's
+  # pushed digest (skopeo --preserve-digests: no rebuild, no new digest).
+  # github.run_number is unchanged by a re-run, so a re-run of an old commit
+  # can never outrank a newer one. Published only while the built commit is
+  # still the main tip, and only once per package: a re-run publishes only a
+  # tag that is missing (recovering a partial publish) and never re-pushes one
+  # that exists. The infra admission policy rejects a mismatched pair (D4).
+  # Every existing tag behaves exactly as before.
+  flux-tag:
+    needs: build-scan-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Push Flux tag (main-<shortsha>-<run_number>) to both packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          BRANCH: main
+          BUILD_SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+          A_IMAGE: ghcr.io/maxkuminov/tdf-lab-web
+          A_DIGEST: ${{ needs.build-scan-push.outputs.digest-tdf-lab-web }}
+          B_IMAGE: ghcr.io/maxkuminov/tdf-lab-share-api
+          B_DIGEST: ${{ needs.build-scan-push.outputs.digest-tdf-lab-share-api }}
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad sha '$BUILD_SHA'"; exit 1; }
+          [[ "$RUN_NUMBER" =~ ^[0-9]+$ ]] || { echo "::error::bad run number '$RUN_NUMBER'"; exit 1; }
+          for d in "$A_DIGEST" "$B_DIGEST"; do
+            [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::missing or bad digest '$d' from the build legs"; exit 1; }
+          done
+          tag="${BRANCH}-${BUILD_SHA::7}-${RUN_NUMBER}"
+          tip=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${BRANCH}" --jq .sha)
+          if [ "$tip" != "$BUILD_SHA" ]; then
+            echo "::notice::${BRANCH} is now ${tip}, not ${BUILD_SHA}: ${tag} not published"
+            echo "Flux tag \`${tag}\` **not published**: ${BRANCH} moved on to \`${tip}\`." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          auth="$RUNNER_TEMP/ghcr-auth.json"
+          trap 'rm -f "$auth"' EXIT
+          echo "$GH_TOKEN" | skopeo login --authfile "$auth" ghcr.io -u "$ACTOR" --password-stdin
+          # Decide for both packages first, then write the missing tags back to back.
+          todo=()
+          for pair in "$A_IMAGE@$A_DIGEST" "$B_IMAGE@$B_DIGEST"; do
+            image=${pair%@*}
+            if out=$(skopeo inspect --raw --authfile "$auth" "docker://${image}:${tag}" 2>&1 >/dev/null); then
+              echo "::notice::${image}:${tag} already exists (re-run): not re-pushed"
+              echo "Flux tag \`${image}:${tag}\` already present (re-run): not re-pushed." >> "$GITHUB_STEP_SUMMARY"
+            elif grep -qiE 'manifest unknown|no such manifest' <<<"$out"; then
+              todo+=("$pair")
+            else
+              echo "::error::cannot tell whether ${image}:${tag} exists: ${out}"; exit 1
+            fi
+          done
+          for pair in "${todo[@]}"; do
+            image=${pair%@*}
+            skopeo copy --all --preserve-digests --authfile "$auth" \
+              "docker://${pair}" "docker://${image}:${tag}"
+            echo "Flux tag \`${image}:${tag}\` published (${pair#*@})." >> "$GITHUB_STEP_SUMMARY"
+          done
+          skopeo logout --authfile "$auth" ghcr.io || true
