@@ -154,10 +154,17 @@ jobs:
   # them). The tags are written last, back to back, by copying each leg's
   # pushed digest (skopeo --preserve-digests: no rebuild, no new digest).
   # github.run_number is unchanged by a re-run, so a re-run of an old commit
-  # can never outrank a newer one. Published only while the built commit is
-  # still the main tip, and only once per package: a re-run publishes only a
-  # tag that is missing (recovering a partial publish) and never re-pushes one
-  # that exists. The infra admission policy rejects a mismatched pair (D4).
+  # can never outrank a newer one. Published only once per package: a re-run
+  # publishes only a tag that is missing (recovering a partial publish) and
+  # never re-pushes one that exists; any other answer from the registry fails
+  # the job. There is deliberately NO "still the main tip" check: ordering is
+  # by run_number, which GitHub assigns at trigger time (a later push always
+  # gets a higher one) and a re-run keeps, so an older commit's tag - even one
+  # published late - can never outrank a newer commit's. A tip check only
+  # added a failure mode: when a newer push's run failed its gates or never
+  # ran, this passing build exited 0 unpublished (and so did its re-run), and
+  # the cluster silently stayed on the previous build. The infra admission
+  # policy rejects a mismatched pair (D4).
   # Every existing tag behaves exactly as before.
   flux-tag:
     needs: build-scan-push
@@ -187,12 +194,6 @@ jobs:
             [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::missing or bad digest '$d' from the build legs"; exit 1; }
           done
           tag="${BRANCH}-${BUILD_SHA::7}-${RUN_NUMBER}"
-          tip=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${BRANCH}" --jq .sha)
-          if [ "$tip" != "$BUILD_SHA" ]; then
-            echo "::notice::${BRANCH} is now ${tip}, not ${BUILD_SHA}: ${tag} not published"
-            echo "Flux tag \`${tag}\` **not published**: ${BRANCH} moved on to \`${tip}\`." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
           auth="$RUNNER_TEMP/ghcr-auth.json"
           trap 'rm -f "$auth"' EXIT
           echo "$GH_TOKEN" | skopeo login --authfile "$auth" ghcr.io -u "$ACTOR" --password-stdin
