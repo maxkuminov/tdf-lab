@@ -25,7 +25,7 @@ RUN rm -f public/records.json public/config.js \
  && test -s src/wrapper/generated/sealed-script.sha256 \
  && ! test -e dist/config.js
 
-FROM nginxinc/nginx-unprivileged:1.30-alpine@sha256:4714e0b1b2577eaa1a6131d07c958b67f0eb68e6d0521e90c6e5287db8cf0bc5
+FROM nginxinc/nginx-unprivileged:1.31-alpine@sha256:b9241c6e7b8e9a862f129d8d4199ab64b10390949a78bdd5603379b32c844083
 LABEL org.opencontainers.image.title="tdf-lab-web" \
       org.opencontainers.image.description="TDF Lab Console: static SPA + same-origin /api/ proxy, runtime-configured" \
       org.opencontainers.image.licenses="MIT"
