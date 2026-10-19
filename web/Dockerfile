@@ -12,7 +12,7 @@
 #  be writable (emptyDir / tmpfs).
 # =============================================================================
 
-FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS build
+FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS build
 WORKDIR /src
 COPY webapp/package.json webapp/package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -25,7 +25,7 @@ RUN rm -f public/records.json public/config.js \
  && test -s src/wrapper/generated/sealed-script.sha256 \
  && ! test -e dist/config.js
 
-FROM nginxinc/nginx-unprivileged:1.31-alpine@sha256:b9241c6e7b8e9a862f129d8d4199ab64b10390949a78bdd5603379b32c844083
+FROM nginxinc/nginx-unprivileged:1.31-alpine@sha256:b5047b9b76845eac124358373c6852377c52e4b05834a47647e955dd91cb8f1e
 LABEL org.opencontainers.image.title="tdf-lab-web" \
       org.opencontainers.image.description="TDF Lab Console: static SPA + same-origin /api/ proxy, runtime-configured" \
       org.opencontainers.image.licenses="MIT"
