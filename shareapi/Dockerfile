@@ -10,7 +10,7 @@
 #  Runs as uid 10001 with a read-only root filesystem; DATA_DIR (/data) is the
 #  only thing it writes and must be a volume. HOME=/tmp for node's own needs.
 # =============================================================================
-FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f
+FROM node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53
 LABEL org.opencontainers.image.title="tdf-lab-share-api" \
       org.opencontainers.image.description="TDF Lab share API: stores sealed .tdf files, never plaintext" \
       org.opencontainers.image.licenses="MIT"
