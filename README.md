@@ -365,7 +365,7 @@ webapp/                      browser console (Vite + React + TypeScript, @opentd
   e2e/                       verification harnesses (see above)
 shareapi/                    ciphertext-only file store (Node, Express 5, jose) + its Dockerfile
 dbdemo/                      field-level encrypted SQLite demo (Python stdlib + otdfctl)
-docs/                        write-up (WHITEPAPER.md)
+docs/                        write-up (WHITEPAPER.md) and its screenshots (img/)
 ```
 
 ### What is not in this repo
