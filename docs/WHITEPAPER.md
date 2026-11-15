@@ -2,7 +2,7 @@
 
 Max Kuminov, CISSP
 
-10 September 2026
+10 September 2026. Revised 15 November 2026 (prose edits, figures added).
 
 ## Abstract
 
@@ -12,7 +12,7 @@ There are two broad ways to control who reads a piece of data. Mediated access p
 
 ### Two models
 
-Most access control in production systems is mediated. A request for data arrives at a service, the service checks who is asking, a policy decision point evaluates the request, and an enforcement point either returns the bytes or does not. NIST SP 800-207 describes zero trust architecture in exactly these terms: a policy engine and policy administrator make and communicate decisions, and a policy enforcement point sits in the data path and carries them out. The data never leaves the protected side unless the decision says so.
+Most access control in production systems is mediated. A request for data arrives at a service, the service checks who is asking, a policy decision point evaluates the request, and an enforcement point either returns the bytes or does not. NIST SP 800-207 describes zero trust architecture in these terms: a policy engine and policy administrator make and communicate decisions, and a policy enforcement point sits in the data path and carries them out. The data never leaves the protected side unless the decision says so.
 
 Cryptographic wrapping takes a different position. The data object is encrypted with a data encryption key (DEK). The DEK is itself wrapped (encrypted) with a key held by a key access service (KAS). The object carries three things with it: the encrypted payload, a policy describing who may read it (for example, a set of attribute values), and key access information saying which KAS holds the wrapping key and how the policy is cryptographically bound to the wrapped key. The object can then sit on any storage, cross any network, and pass through any intermediary. To read it, a client presents the key access information and its own credentials to the KAS, which checks the policy against the requester's attributes and either releases the DEK (rewrapped to a key the client supplies) or refuses.
 
@@ -20,7 +20,7 @@ The Trusted Data Format (TDF) is an open specification for the second model, and
 
 ### Hypothesis
 
-The two models fail differently, and the difference shows up at the points where a design gets hard: the network edge, disconnected operation, a data copy leaving the system, a revoked user, a compromised storage tier. It is easy to read wrapping as the model that removes the need for a trusted path. My starting hypothesis was that wrapping moves the mediator from the data path to the key path rather than removing it. I wanted to see that with my own hands, with real numbers, rather than argue it from diagrams.
+The two models fail differently, and the difference shows up at the points where a design gets hard: the network edge, disconnected operation, a data copy leaving the system, a revoked user, a compromised storage tier. It is easy to read wrapping as the model that removes the need for a trusted path. My starting hypothesis was that wrapping moves the mediator from the data path to the key path rather than removing it. I wanted to test that with my own hands and real numbers instead of arguing it from diagrams.
 
 The attribute-based access control (ABAC) terms in this paper follow NIST SP 800-162: subjects have attributes, objects have attributes, and a policy relates the two. In OpenTDF the object attributes live in the TDF's policy, and the subject attributes are resolved from the identity provider at decision time.
 
@@ -94,13 +94,17 @@ The decision followed the attribute within about a second in both directions, wi
 
 Two details of the denial are worth knowing if you build on this platform. First, a rewrap denial on platform v0.25.1 is an HTTP 200 whose per-key-access result carries an error, not an HTTP 403. The browser SDK turns that into an exception with a fixed message and drops the platform's own text, so an interceptor watching only for failed HTTP calls records the denial as a success. The console had to read the response body to show the real reason. Second, a denial and a tampered policy are different answers. Editing the policy inside a `.tdf` breaks the policy binding, and the KAS answers `invalid_argument` with `[tamper detected]` in its message. I could reproduce that by swapping `/secret` for `/public` in the base64 policy, which keeps the length identical so no ZIP offset moves. The console ended up reporting four distinct outcomes: access denied, policy binding mismatch, payload integrity failure (rewrap succeeded, AES-GCM tag failed), and token rejected.
 
-One policy lesson came from this loop too. As first seeded, the `public` value had no subject mapping at all. `user-b` sealed a file to `public` and was then refused his own file. Nothing warned about it; an unsatisfiable attribute value just looks like a denial.
+One policy lesson came from this loop too. As first seeded, the `public` value had no subject mapping at all. `user-b` sealed a file to `public` and was then refused that same file. Nothing warned about it; an unsatisfiable attribute value just looks like a denial.
 
 ### The shared library
 
-The shared library made the thesis visible. Every signed-in account can list every file and download the sealed bytes of any of them. The harness confirmed that `user-b` downloads a `user-a` file byte-identical to what was uploaded and is refused on decrypt, while `user-a` opens a file `user-b` published to `public`. In the field-level demo's browser view, the sealed table is served as a static JSON file with no authentication at all, and a non-author check confirmed that an unauthenticated `curl` retrieves it. That is intentional. The ciphertext is inert; reading it still costs a rewrap, and the KAS answers per file, per account, every time.
+Every signed-in account can list every file and download the sealed bytes of any of them. The automated checks confirmed that `user-b` downloads a `user-a` file byte-identical to what was uploaded and is refused on decrypt, while `user-a` opens a file `user-b` published to `public`. In the field-level demo's browser view, the sealed table is served as a static JSON file with no authentication at all, and a non-author check confirmed that an unauthenticated `curl` retrieves it. That is intentional. The ciphertext is inert; reading it still costs a rewrap, and the KAS answers per file, per account, every time.
 
-Building the library exposed a trust question I had not thought through. The share API holds no DEK, so it cannot check the policy binding HMAC. It can confirm that an upload is a well-formed TDF, but it cannot prove the attributes declared in the manifest are the ones the key was actually bound to. An authenticated uploader could publish a structurally valid file whose manifest claims `public` while the key is bound to something else. The listing would be wrong; access would not change, because the file would simply fail to open for the wrong people. The phrase I settled on for the UI was "a listing is a claim; an Open is the proof."
+![The same sealed file in two library views: access granted with plaintext for user A, access denied with a permission_denied result for user B](img/library-possession-vs-access.png)
+
+*Figure 1. One sealed file in the shared library, opened by `user-a` (left) and by `user-b` (right).*
+
+Building the library exposed a trust question I had not thought through. The share API holds no DEK, so it cannot check the policy binding HMAC. It can confirm that an upload is a well-formed TDF, but it cannot prove the attributes declared in the manifest are the ones the key was actually bound to. An authenticated uploader could publish a structurally valid file whose manifest claims `public` while the key is bound to something else. The listing would be wrong; access would not change, because the file would fail to open for the wrong people. The phrase I settled on for the UI was "a listing is a claim; an Open is the proof."
 
 A related limit: standard users cannot ask the platform what they are entitled to. The entitlements call is refused to them (both demo users got `permission_denied`), and entitlements are not in the token. So the browser cannot predict whether a file will open. The library can only remember what the KAS decided for files already opened, and even that generalizes poorly: an ANY_OF grant on a file bound to {A, B} proves only that at least one of A or B passed, so it says nothing about a file bound to {A} alone.
 
@@ -108,20 +112,24 @@ A related limit: standard users cannot ask the platform what they are entitled t
 
 Phase 5 asked what happens when a sealed file is packaged as a single HTML page you can email or copy to a USB stick. The page contains the ciphertext, the manifest and a small reader.
 
-I checked the SDK before building a generator, and the checking mattered. `@opentdf/sdk` 0.20.0 keeps an HTML reader (`unwrapHtml()`, which pulls base64 out of a specific input element) but has removed every writer: the HTML format setters throw a configuration error, the format check is hardcoded to false, and the legacy `asHtml` encrypt option throws. The reader is also wired only into the legacy client, not the `OpenTDF` class the console uses. So I generated the page myself in the same shape and proved compatibility by round-tripping a generated page through the SDK's own `unwrapHtml()`.
+I checked the SDK before building a generator. `@opentdf/sdk` 0.20.0 keeps an HTML reader (`unwrapHtml()`, which pulls base64 out of a specific input element) but has removed every writer: the HTML format setters throw a configuration error, the format check is hardcoded to false, and the legacy `asHtml` encrypt option throws. The reader is also wired only into the legacy client, not the `OpenTDF` class the console uses. So I generated the page myself in the same shape and proved compatibility by round-tripping a generated page through the SDK's own `unwrapHtml()`.
 
 The same file behaved differently depending on where it was opened:
 
-| Opened from | Behaviour |
+| Opened from | Behavior |
 |---|---|
 | `file://`, a USB stick, an email attachment, any other host | Reads its own manifest with zero network requests and shows the attribute FQNs, KAS URL, policy UUID, schema version and size; explains that it cannot decrypt here |
 | The console's own origin | Signs in with PKCE, performs a real rewrap, decrypts in the page; `user-a` sees plaintext, `user-b` on a `secret` file gets `permission_denied` |
 
-Nothing about the file changed between those two rows; only the origin did. A browser loading a document from the filesystem gives it an opaque origin, which serializes as `null`. No OAuth client can register a redirect URI back to a `null`-origin document, and adding `null` to a CORS allowlist admits every filesystem document and sandboxed frames without same-origin privileges, not this one file. So the portable page could read everything it needed except the key.
+Nothing about the file changed between those two rows; only the origin did. A browser loading a document from the filesystem gives it an opaque origin, which serializes as `null`. No OAuth client can register a redirect URI back to a `null`-origin document, and adding `null` to a CORS allowlist admits sandboxed frames without same-origin privileges and every filesystem document, not this one file. So the portable page could read everything it needed except the key.
+
+![A sealed document page listing the file's key server, policy UUID, schema, payload size and bound attribute value](img/wrapper-offline-manifest.png)
+
+*Figure 2. An HTML-wrapped file opened from disk. Everything shown was read from the embedded manifest with no network request.*
 
 Injection safety was designed to be structural rather than a matter of careful escaping. A `.tdf` someone hands you is attacker-controlled, including its filename, attribute FQNs, dissemination list and MIME type. The page template has exactly two substitution slots, both inside double-quoted attributes, and both are validated against a strict base64 pattern; the generator throws rather than emit anything else. Base64 contains no `<`, `"`, `'` or `&`. Everything the page displays is read out of the embedded TDF at runtime by its own ZIP64-aware reader and written with `textContent`. A fixture whose attribute FQN ended in `"><script>window.__pwned=1</script>` rendered as visible text, the flag stayed undefined, the live DOM contained exactly one script element, and no injected image or SVG elements appeared.
 
-Because nothing variable ever reaches markup, the inline script is byte-identical in every page generated, so its SHA-256 is a stable Content Security Policy hash. The path that serves wrappers pins `script-src` to that one hash. That makes a failure of the escaping rule non-exploitable on the console's origin: an injected script would not match the hash and would not run, so it could not reach the session storage where the token lives. The CSP is defence in depth; the primary control is that hostile strings never reach markup.
+Because nothing variable ever reaches markup, the inline script is byte-identical in every page generated, so its SHA-256 is a stable Content Security Policy hash. The path that serves wrappers pins `script-src` to that one hash. That makes a failure of the escaping rule non-exploitable on the console's origin: an injected script would not match the hash and would not run, so it could not reach the session storage where the token lives. The CSP is defense in depth; the primary control is that hostile strings never reach markup.
 
 TDF archives also need a careful reader. The SDK's ZIP writer always emits ZIP64 with `0xffffffff` size sentinels in every local file header, at any file size; the real sizes live in the central directory's ZIP64 extra field. A reader that trusts local headers sees a valid `.tdf` as two empty entries.
 
@@ -134,7 +142,7 @@ The portable page could not decrypt, so it needed a way to hand its bytes to the
 3. The console accepts only if it is in handoff mode, the message came from `window.opener`, the nonce matches its own fragment (exactly 32 hex characters, consumed on first use), the sender's origin is `null` or the console's own, and a port was transferred.
 4. The console replies `ready` on the port, and only then does the page transfer the payload as an `ArrayBuffer`.
 
-The port is the reason this works without a wildcard. A `file://` document's origin is `null`, and nothing can address a `postMessage` to it except `'*'`. A transferred port is a capability instead of an address, so no wildcard target origin appears anywhere in the feature. What the protocol establishes is narrow: the bytes came from the window that opened the console, and a wrapper rehosted on a third-party site is refused. What it does not establish is that the local document is authentic; nothing can authenticate a `null`-origin document, which is why it had to hand over at all. That is acceptable because the console treats the payload as wholly untrusted ciphertext, and nothing flows back to the page except `ready` and an acknowledgement.
+The port is the reason this works without a wildcard. A `file://` document's origin is `null`, and nothing can address a `postMessage` to it except `'*'`. A transferred port is a capability instead of an address, so no wildcard target origin appears anywhere in the feature. What the protocol establishes is narrow: the bytes came from the window that opened the console, and a wrapper rehosted on a third-party site is refused. What it does not establish is that the local document is authentic; nothing can authenticate a `null`-origin document, which is why it had to hand over at all. That is acceptable because the console treats the payload as wholly untrusted ciphertext, and nothing flows back to the page except `ready` and an acknowledgment.
 
 The wrapper also deliberately did not carry its own decrypt code in this design. A wrapper is an attacker-supplied document. If it shipped its own OIDC client and rewrap implementation, anyone who could hand you an `.html` could hand you the code that touches your access token.
 
@@ -142,10 +150,10 @@ The wrapper also deliberately did not carry its own decrypt code in this design.
 
 The obvious question was why a wrapper cannot just sign in and decrypt in place. The obstacle is not cryptography: in Chromium, `file://` counts as a potentially trustworthy scheme under the Secure Contexts specification, so the page is a secure context with full WebCrypto. I measured `isSecureContext: true`, RSA-OAEP key generation (a 294-byte SPKI), ECDSA P-256 signing and AES-GCM encryption all working from a `file://` page. The obstacle is authentication, because browser OAuth flows redirect. The OAuth 2.0 Device Authorization Grant (RFC 8628) never redirects: the page shows a short code, the user types it into the identity provider's own page in a normal tab, and the page polls the token endpoint until a token is issued.
 
-A design that uses the device grant this way has to accept two costs, and I think both should be printed on the page for the reader:
+A design that uses the device grant this way has to accept two costs, and both should be printed on the page for the reader:
 
-1. The KAS and the identity provider must allow `Origin: null` in CORS. That does not admit "this file"; it admits every filesystem document and sandboxed frames without same-origin privileges. A valid token is still required and no policy decision changes, but token theft or malicious wrapper code can still expose data; the set of pages allowed to ask gets much larger.
-2. The wrapper's own JavaScript now handles the user's access token and the plaintext. In the console that code is served by the origin that owns the credentials. In a wrapper it arrived in the same file as the ciphertext, from whoever sent it. Opening a wrapper becomes choosing to run the sender's program. A trusted web application avoids asking the reader to entrust credentials to code delivered by the sender.
+1. The KAS and the identity provider must allow `Origin: null` in CORS. That does not admit "this file"; it admits sandboxed frames without same-origin privileges and every filesystem document. A valid token is still required and no policy decision changes, but token theft or malicious wrapper code can still expose data; the set of pages allowed to ask gets much larger.
+2. The wrapper's own JavaScript now handles the user's access token and the plaintext. In the console that code is served by the origin that owns the credentials. In a wrapper it arrives in the same file as the ciphertext, from whoever sent it. Opening a wrapper becomes choosing to run the sender's program.
 
 What the variant cannot do is support an arbitrary foreign HTTPS origin. The platform sends credentials in CORS, and the Fetch standard forbids `Access-Control-Allow-Origin: *` together with credentials, so there is no "any origin" value to configure. Supporting foreign hosts would mean turning credentialed CORS off, which is a much larger widening than adding `null`.
 
@@ -155,6 +163,10 @@ The variant was only partly verified. Its pieces were measured and its generator
 
 Phase 7 applied wrapping at the smallest granularity I could think of: a single database cell. A SQLite `employees` table keeps name, department and `classification` in plain columns, which stay queryable. The three sensitive columns (`ssn`, `salary`, `notes`) exist only as ZTDF ciphertexts, one TDF per cell, each sealed under the row's `classification` value. Five fictional rows, three protected fields, fifteen sealed cells.
 
+![The employees table with name, department and classification readable and every SSN, salary and notes cell shown as a sealed object](img/field-level-sealed-cells.png)
+
+*Figure 3. The table before any rewrap: the plain columns are readable, and each protected cell is a sealed object.*
+
 Results, run for real on 2026-09-01:
 
 - `user-a` decrypted 15 of 15 cells.
@@ -162,13 +174,17 @@ Results, run for real on 2026-09-01:
 - `strings` over the database file found zero plaintext of any sensitive value.
 - Each cell costs one KAS rewrap to read, so rendering the full table as `user-a` is fifteen key-server calls.
 
+![The same table as user B: values shown in the two public rows and DENIED in the three secret rows](img/field-level-user-b-view.png)
+
+*Figure 4. The same table rendered as `user-b`: 6 cells granted, 9 refused by the KAS.*
+
 The size cost is the part to budget for. Measured from the demo database, each sealed cell is 1,723 to 1,746 bytes, protecting 8 to 30 bytes of plaintext. Per cell that is 58 to 215 times the plaintext; across the table, 232 bytes of plaintext became 25,967 bytes of ciphertext, about 112 times. Almost all of that is the ZIP container and the self-describing JSON manifest, which is the same size whether the payload is an eight-byte salary or a paragraph.
 
 This demo was originally scoped for NanoTDF, the compact binary TDF variant designed for this kind of workload, which the lab record estimated at about 300 bytes per cell. NanoTDF no longer exists in OpenTDF. It was removed in one sweep in the v0.12.0 releases of 27 January 2026 (platform PR #3013, "fix!: remove nanotdf support"): the KAS nano rewrap path, the Go SDK's create and read functions, `otdfctl`'s nano option, the supporting crypto helpers, and the NanoTDF documentation in the spec repository. The release notes identify removal as a breaking change; they do not state a rationale. Against a v0.25.1 KAS, no client of any age can complete a NanoTDF round trip: an old SDK could still create a nano ciphertext, but nothing could rewrap it. For compact per-field encryption on this platform, that leaves standard TDF with its manifest overhead, or a different design (for example, wrapping one DEK per row or per column group and encrypting fields under it), which trades per-cell policy granularity for size.
 
 ### Instrumentation honesty
 
-Two findings from the review passes are not about TDF at all, but they changed how I trust the lab's own output. The console kept a session-long log of RPC calls, and its error classifier explained a failure by searching that log for the most recent rewrap failure. Decrypt a denied file, then decrypt a file whose rewrap succeeds but whose payload fails its integrity tag, and the second failure was explained with the first one's denial: the UI reported "access denied, the file is intact" about a file that was not intact. The log was correct; the query had no time bound. Every lookup now takes a cursor captured at the start of the operation. The second was in the protocol diagram, which first labelled the KAS's refusal as "never reached" when on a denial the answer is in fact delivered, inside an HTTP 200. A teaching tool that misreports which component made a decision teaches the wrong model.
+Two findings from the review passes are not about TDF at all, but they changed how I trust the lab's own output. The console kept a session-long log of RPC calls, and its error classifier explained a failure by searching that log for the most recent rewrap failure. Decrypt a denied file, then decrypt a file whose rewrap succeeds but whose payload fails its integrity tag, and the second failure was explained with the first one's denial: the UI reported "access denied, the file is intact" about a file that was not intact. The log was correct; the query had no time bound. Every lookup now takes a cursor captured at the start of the operation. The second was in the protocol diagram, which first labeled the KAS's refusal as "never reached" when on a denial the answer is in fact delivered, inside an HTTP 200.
 
 ## 4. Failure modes
 
@@ -184,23 +200,23 @@ Once bytes leave the enforcement point. After the service returns plaintext, the
 
 ### Cryptographic wrapping
 
-Wrapping fixes the third problem for the ciphertext: the policy travels with the object, and the lab showed that holding the object gives you nothing. The share API, an unauthenticated static file, a USB stick and an email attachment were all equivalent storage. But the lab also showed where the problem moved.
+Wrapping fixes the third problem for the ciphertext: the policy travels with the object, and the lab showed that holding the object gives you nothing. The share API, an unauthenticated static file, a USB stick and an email attachment were all equivalent storage.
 
-Key release is still mediated. Every read in this lab required the KAS to be online and reachable, and every read was a live policy decision by the platform. That is mediated access, applied to keys instead of data. Wrapping changes what the enforcement point protects and how much of the system has to be trusted (the share API could be fully untrusted), but it does not remove the need for an online decision at read time. The disconnected case is not solved; it becomes the question of whether a KAS is reachable. I did not test any offline or cached key release mode, and nothing in this lab supported one.
+Key release is still mediated. Every read in this lab required the KAS to be online and reachable, and every read was a live policy decision by the platform. That is mediated access, applied to keys instead of data. Wrapping changes what the enforcement point protects and how much of the system has to be trusted (the share API could be fully untrusted), but it does not remove the need for an online decision at read time. The disconnected case is not solved; it now depends on whether a KAS is reachable. I did not test any offline or cached key release mode, and nothing in this lab supported one.
 
-Revocation is as good as the next rewrap. The flip trace showed that changing an attribute changed the next decision within about a second, with no token change. That is good revocation for future opens. It does nothing for plaintext already released, for a client that keeps a DEK after decrypting, or for a deployment that caches decisions or keys closer to the client. The lab had no caching I could observe; a production deployment that adds caching for latency or availability trades revocation speed for it.
+Revocation is as good as the next rewrap. The flip trace is good revocation for future opens. It does nothing for plaintext already released, for a client that keeps a DEK after decrypting, or for a deployment that caches decisions or keys closer to the client. A production deployment that adds caching for latency or availability trades revocation speed for it.
 
-Metadata leaks by design. The manifest has to be readable before decryption, because the client needs it to find the KAS and the KAS needs the policy to decide. The `file://` wrapper showed what that means: with zero network calls and no credentials, a page read the attribute FQNs, the KAS URL, the policy UUID, the schema version and the size of the protected object. The policy in a TDF manifest is base64, not encrypted. Anyone who holds the file learns which attributes protect it and which key service governs it. Attribute names chosen for administrators ("classification/secret", a project name, a customer name) become information disclosed to every holder. This is the finding I would put first in a design review: in a wrapping system, attribute naming is a data classification decision in its own right.
+Metadata leaks by design. The manifest has to be readable before decryption, because the client needs it to find the KAS and the KAS needs the policy to decide. The `file://` wrapper read all of it with zero network calls and no credentials. The policy in a TDF manifest is base64, not encrypted. Anyone who holds the file learns which attributes protect it and which key service governs it. Attribute names chosen for administrators ("classification/secret", a project name, a customer name) become information disclosed to every holder. In a wrapping system, attribute naming is a data classification decision in its own right, and it is the finding I would put first in a design review.
 
-Key management becomes the whole problem. In the lab the KAS keys were a static on-disk keyring. Whoever holds those private keys can unwrap every DEK in every file ever sealed to them, without asking any policy engine. Wrapping concentrates risk in the KAS key material and in the KAS software itself; HSM-backed keys, key rotation and split-key schemes (multiple KASes that must each approve) exist to manage exactly that, and none were exercised here.
+Key management becomes the whole problem. Whoever holds the KAS private keys can unwrap every DEK in every file ever sealed to them, without asking any policy engine. Wrapping concentrates risk in the KAS key material and in the KAS software itself; HSM-backed keys, key rotation and split-key schemes (multiple KASes that must each approve) exist to manage that risk.
 
-Size and call volume scale with granularity. At file granularity a fixed overhead of about 1.7 KB matters little. Per-cell wrapping cost 58 to 215 times the plaintext and one KAS call per cell read. The compact format that was designed for fine-grained use has been removed from the reference implementation. Protected fields also stop being queryable: you cannot filter, index, join or aggregate on a column the database cannot read.
+Size and call volume scale with granularity. At file granularity a fixed overhead of about 1.7 KB matters little. At cell granularity it is the multiple measured above plus one KAS call per read, and the compact format designed for fine-grained use has been removed from the reference implementation. Protected fields also stop being queryable: you cannot filter, index, join or aggregate on a column the database cannot read.
 
-Portable documents hit the browser's origin model. A wrapped document either hands its bytes to a trusted origin, or accepts a much larger CORS surface and runs the sender's code with the user's token. On the server side, a service without the DEK cannot verify a manifest's policy binding, so any index built from manifests is a claim rather than a fact.
+Portable documents hit the browser's origin model. A wrapped document either hands its bytes to a trusted origin, or accepts a much larger CORS surface and runs the sender's code with the user's token.
 
 ### Boundary conditions
 
-I don't think either model wins in general. These are the conditions I would use to choose.
+Neither model wins in general. These are the conditions I would use to choose.
 
 Prefer mediated access when:
 
@@ -218,27 +234,27 @@ Prefer cryptographic wrapping when:
 
 Neither model covers:
 
-- plaintext after release (both models end at the point of decryption);
+- plaintext after release;
 - truly disconnected reading, unless you add an offline key release scheme with its own revocation limits;
 - confidentiality of policy metadata, in the wrapping case, unless attribute names are chosen with that in mind.
 
-Several of the lab's surfaces combined the two. The library listing was mediated (authenticated, per-user quotas) while the content was wrapped. That combination is probably the common case in practice: mediate the metadata and the listing, wrap the content, and accept that the KAS is the enforcement point that still has to be online.
+Several of the lab's surfaces combined the two. The library listing was mediated (authenticated, per-user quotas) while the content was wrapped. That combination is probably the common case in practice: mediated metadata and listings around wrapped content, with a KAS that still has to be online.
 
 ## 5. Limitations
 
-- Single host, single operator. Every component ran on one Docker host in a homelab, on personal time. Nothing here measures behaviour under real network partitions, multiple regions or real load.
+- Single host, single operator. Every component ran on one Docker host in a homelab, on personal time. Nothing here measures behavior under real network partitions, multiple regions or real load.
 - Synthetic data. All files, the two users and the five database rows are fictional. `secret` and `public` are demo attribute values only.
 - One version of each component. Platform v0.25.1, `@opentdf/sdk` 0.20.0, `otdfctl` v0.37.0, Keycloak 26.x (26.4.7, upgraded to 26.7.2 mid-lab), Chromium for all browser measurements. The NanoTDF removal is a reminder that the format and the SDK surface change; findings about what the SDK does or does not support are specific to these versions.
 - No performance benchmarking. The only quantitative results are sizes, counts and the flip timing at one-second resolution. I did not measure rewrap latency, throughput, or KAS capacity.
 - No adversarial red team. Security testing was hostile fixtures (injection, forged ZIP sizes, path traversal, wrong token types, expired tokens), policy tamper, and review passes. No one attacked the platform, the identity provider or the KAS directly.
-- No HSM or key management service. KAS keys were a static on-disk keyring. Post-quantum KAS key types in the upstream example configuration were omitted. No multi-KAS key splitting.
-- Verification by tooling, not people. Checks were the author's own harnesses plus non-author automated passes (a second AI model family for design and security review, separate agents for bring-up and browser checks). These caught real defects, but they are not an independent human audit.
+- No HSM or key management service, and no multi-KAS key splitting. Post-quantum KAS key types in the upstream example configuration were omitted.
+- Verification by tooling, not people. The author's own harnesses and the non-author automated passes caught real defects, but they are not an independent human audit.
 - One unverified chain. The self-authenticating wrapper variant was verified in pieces, not end to end.
 - Revocation was measured only for the attribute-flip case with no caching layer present. I did not test token revocation at the identity provider, KAS key rotation, or policy changes on already-distributed files beyond attribute flips.
 
 ## 6. How to reproduce
 
-The kit accompanying this paper contains a sanitized copy of the lab with all hostnames genericized (`tdf.lab.example` for the console and names under `lab.example` for the other services), no secrets, and an example environment file. Its layout:
+The kit accompanying this paper contains a sanitized copy of the lab with the same genericized hostnames, no secrets, and an example environment file. Its layout:
 
 | Path | Contents |
 |---|---|
